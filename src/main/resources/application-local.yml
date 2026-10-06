@@ -1,0 +1,24 @@
+# Local development profile: the application serves an itsme STUB under /itsme-stub.
+# Activate with -Dspring.profiles.active=local (see the IntelliJ run configuration in .run/).
+# No Docker, no external service, no itsme credentials needed.
+server:
+  port: 8080
+
+itsme:
+  client-id: voltahome-local
+  # Switch method with -Ditsme.client-authentication=client-secret (second IntelliJ run configuration)
+  client-secret: local-development-secret-not-for-production
+  redirect-uri: http://localhost:8080/login/oauth2/code/itsme
+  endpoints:
+    issuer: http://localhost:8080/itsme-stub/v2
+    authorization-uri: http://localhost:8080/itsme-stub/v2/authorization
+    token-uri: http://localhost:8080/itsme-stub/v2/token
+    jwk-set-uri: http://localhost:8080/itsme-stub/v2/jwks
+    discovery-uri: http://localhost:8080/itsme-stub/v2/.well-known/openid-configuration
+  proxy:
+    host: ""
+  keys:
+    ephemeral: true               # key pairs method: throw-away keys generated at startup; refused with non-localhost endpoints
+
+itsme-stub:
+  client-jwks-uri: http://localhost:8080/.well-known/jwks.json   # where the stub reads OUR public keys, like itsme

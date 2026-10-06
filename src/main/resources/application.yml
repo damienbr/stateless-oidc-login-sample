@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: voltahome-portal
+  datasource:
+    url: jdbc:h2:mem:voltahome;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+
+# itsme configuration — see README "Configuration".
+# Endpoints are static (proxies and firewalls are configured in advance).
+# The discovery document is only used to VERIFY these values (ItsmeDiscoveryCheck).
+itsme:
+  client-id: ${ITSME_CLIENT_ID:demo-client}
+  client-authentication: private-key-jwt                   # or client-secret (README "Two client authentication methods")
+  client-secret: ${ITSME_CLIENT_SECRET:}                    # client-secret method only; injected from a vault
+  service-code: ${ITSME_SERVICE_CODE:VOLTAHOME_LOGIN}
+  redirect-uri: ${ITSME_REDIRECT_URI:https://portal.voltahome.example/login/oauth2/code/itsme}
+  acr: http://itsme.services/v2/claim/acr_advanced
+  endpoints:
+    issuer: ${ITSME_ISSUER:https://idp.e2e.itsme.services/v2}   # copy the exact value from the discovery document
+    authorization-uri: https://idp.e2e.itsme.services/v2/authorization
+    token-uri: https://idp.e2e.itsme.services/v2/token
+    jwk-set-uri: ${ITSME_JWKS_URI:https://idp.e2e.itsme.services/v2/REPLACE-WITH-jwks_uri-FROM-DISCOVERY}
+    discovery-uri: https://idp.e2e.itsme.services/v2/.well-known/openid-configuration
+  proxy:
+    host: ${OUTBOUND_PROXY_HOST:}                            # empty = direct connection
+    port: ${OUTBOUND_PROXY_PORT:0}
+  keys:                                                      # README "Keys"
+    ephemeral: false
+    keystore: ${ITSME_KEYSTORE:}                             # e.g. file:/run/secrets/itsme.p12, provided by a vault
+    keystore-password: ${ITSME_KEYSTORE_PASSWORD:}
+    signing-alias: voltahome-sig
+    encryption-aliases: voltahome-enc
+
+app:
+  login-error-url: /login-error
+
+logging:
+  level:
+    org.springframework.security: INFO   # never DEBUG/TRACE in production (tokens and principals may be printed)

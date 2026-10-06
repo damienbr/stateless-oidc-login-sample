@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="VoltaHome (local, itsme stub)" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.example.voltahome.VoltaHomeApplication" />
+    <module name="stateless-oidc-login-sample" />
+    <option name="VM_PARAMETERS" value="-Dspring.profiles.active=local" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
