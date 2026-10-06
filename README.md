@@ -14,7 +14,7 @@ A runnable reference implementation of a customer login with **itsme** (OpenID C
 
 ## Start here
 
-New to the project? Follow this order; it takes about an hour.
+New to the project? Follow this order; it takes about an hour. For the reasoning behind each choice, read the [walkthrough](docs/walkthrough.md) next.
 
 1. **Run it.** Run the tests, then the browser demo: [Quick start in IntelliJ](#quick-start-in-intellij) and [Run the login in a browser](#run-the-login-in-a-browser).
 2. **See the whole login.** Read the diagram in [Login flow](#login-flow).
