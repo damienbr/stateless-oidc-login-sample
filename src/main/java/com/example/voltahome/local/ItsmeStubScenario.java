@@ -1,6 +1,6 @@
 package com.example.voltahome.local;
 
-/** Test itsme accounts offered by the itsme stub page. All data is fictitious (see data.sql). */
+/** LOCAL DEVELOPMENT ONLY. Test itsme accounts offered by the itsme stub page. All data is fictitious (see data.sql). */
 enum ItsmeStubScenario {
 
     ALEX("Alex Martin — itsme linked to VoltaHome", "stub-sub-alex", false, false),

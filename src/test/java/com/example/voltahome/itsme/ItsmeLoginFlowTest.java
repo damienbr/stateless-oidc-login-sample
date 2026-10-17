@@ -6,8 +6,9 @@ import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -22,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import com.example.voltahome.demo.DemoSession;
 import com.example.voltahome.fraud.FraudService;
 import com.example.voltahome.fraud.FraudSignal;
 import com.example.voltahome.local.ItsmeStubCrypto;
@@ -32,6 +34,7 @@ import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -92,7 +95,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void tokenRequestUsesASignedClientAssertionAndPkce() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        login(t -> t.sub("stub-sub-alex")).andExpect(status().isOk());
+        login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal"));
 
         String body = itsme.findAll(postRequestedFor(urlEqualTo("/v2/token"))).get(0).getBodyAsString();
         Map<String, String> form = formParams(body);
@@ -116,10 +119,12 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         void linkedItsmeAccountLogsTheCustomerIn() throws Exception {
             givenLinked("C-1001", "stub-sub-alex");
 
-            login(t -> t.sub("stub-sub-alex"))
+            MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+
+            openPortal(result)
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.customerId").value("C-1001"))
-                    .andExpect(jsonPath("$.authenticationLevel").value(ItsmeWireMock.ACR_ADVANCED));
+                    .andExpect(content().string(containsString("C-1001")))
+                    .andExpect(content().string(containsString(ItsmeWireMock.ACR_ADVANCED)));
         }
 
         @Test
@@ -140,11 +145,16 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         void identityClaimsSentByItsmeAreNotHandedOver() throws Exception {
             givenLinked("C-1001", "stub-sub-alex");
 
-            String body = login(t -> t.sub("stub-sub-alex").claim("name", "Alex Martin")
+            MvcResult result = login(t -> t.sub("stub-sub-alex").claim("name", "Alex Martin")
                             .claim("email", "alex.martin@example.com"))
-                    .andExpect(status().isOk())
-                    .andReturn().getResponse().getContentAsString();
-            assertThat(body).doesNotContain("stub-sub-alex", "Alex Martin", "alex.martin@example.com");
+                    .andExpect(redirectedUrl("/portal"))
+                    .andReturn();
+
+            // What the demo hand-over issues: the claims of the session cookie
+            String handedOver = SignedJWT.parse(result.getResponse().getCookie(DemoSession.COOKIE).getValue())
+                    .getPayload().toString();
+            assertThat(handedOver).contains("C-1001")
+                    .doesNotContain("stub-sub-alex", "Alex Martin", "alex.martin@example.com");
         }
 
         @Test
@@ -255,7 +265,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             StartedLogin started = startLogin();
             stubTokenEndpoint(idToken(started.nonce()).sub("stub-sub-alex").build());
 
-            callback(started.state()).andExpect(status().isOk());
+            callback(started.state()).andExpect(redirectedUrl("/portal"));
             callback(started.state()).andExpect(redirectedUrl("/login-error?error=authorization_request_not_found"));
         }
 
@@ -309,9 +319,13 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         @Test
         void noSessionIsCreatedDuringTheWholeFlow() throws Exception {
             givenLinked("C-1001", "stub-sub-alex");
-            MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(status().isOk()).andReturn();
+            MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
             assertThat(result.getRequest().getSession(false)).isNull();
             assertThat(result.getResponse().getCookie("JSESSIONID")).isNull();
+
+            MvcResult portal = openPortal(result).andExpect(status().isOk()).andReturn();
+            assertThat(portal.getRequest().getSession(false)).isNull();
+            assertThat(portal.getResponse().getCookie("JSESSIONID")).isNull();
         }
     }
 

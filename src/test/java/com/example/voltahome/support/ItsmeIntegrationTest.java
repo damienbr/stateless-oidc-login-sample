@@ -13,10 +13,12 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
+import com.example.voltahome.demo.DemoSession;
 import com.example.voltahome.fraud.FraudService;
 import com.example.voltahome.itsme.ItsmeKeys;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.nimbusds.jose.jwk.RSAKey;
+import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -115,6 +117,13 @@ public abstract class ItsmeIntegrationTest {
         StartedLogin started = startLogin();
         stubTokenEndpoint(token.apply(idToken(started.nonce())).build());
         return callback(started.state());
+    }
+
+    /** After a successful login: the browser follows the redirect to the portal, with the cookie it received. */
+    protected ResultActions openPortal(MvcResult successfulLogin) throws Exception {
+        Cookie session = successfulLogin.getResponse().getCookie(DemoSession.COOKIE);
+        assertThat(session).as("demo session cookie").isNotNull();
+        return mvc.perform(get("/portal").cookie(session));
     }
 
     /** ID token as itsme sends it for the client's method. */

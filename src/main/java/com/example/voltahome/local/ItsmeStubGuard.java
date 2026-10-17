@@ -6,14 +6,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-/** Prevents the itsme stub from being used anywhere else than on a developer machine. */
+/**
+ * LOCAL DEVELOPMENT ONLY ("local" profile). Stops the application at startup if the itsme stub would run with
+ * endpoints that are not localhost: the stub must never be used anywhere else than on a developer machine.
+ */
 @Component
 @Profile("local")
-class LocalProfileGuard {
+class ItsmeStubGuard {
 
-    private static final Logger log = LoggerFactory.getLogger(LocalProfileGuard.class);
+    private static final Logger log = LoggerFactory.getLogger(ItsmeStubGuard.class);
 
-    LocalProfileGuard(ItsmeProperties properties) {
+    ItsmeStubGuard(ItsmeProperties properties) {
         String issuer = properties.endpoints().issuer();
         if (!issuer.startsWith("http://localhost:") && !issuer.startsWith("http://127.0.0.1:")) {
             throw new IllegalStateException(

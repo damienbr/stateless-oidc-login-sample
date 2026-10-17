@@ -3,8 +3,9 @@ package com.example.voltahome.itsme;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.ObjectMapper;
@@ -70,7 +72,7 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void tokenRequestUsesClientSecretPostAndPkce() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        login(t -> t.sub("stub-sub-alex")).andExpect(status().isOk());
+        login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal"));
 
         Map<String, String> form = formParams(
                 itsme.findAll(postRequestedFor(urlEqualTo("/v2/token"))).get(0).getBodyAsString());
@@ -82,9 +84,11 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void linkedItsmeAccountLogsTheCustomerIn() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        login(t -> t.sub("stub-sub-alex"))
+        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+
+        openPortal(result)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.customerId").value("C-1001"));
+                .andExpect(content().string(containsString("C-1001")));
     }
 
     @Test

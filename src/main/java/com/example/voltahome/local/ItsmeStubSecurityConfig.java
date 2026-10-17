@@ -10,10 +10,13 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 
-/** LOCAL DEVELOPMENT ONLY. Opens /itsme-stub/** without authentication; evaluated before the main filter chain. */
+/**
+ * LOCAL DEVELOPMENT ONLY ("local" profile). Filter chain of the itsme stub: opens /itsme-stub/** without
+ * authentication, as itsme's own pages would be. Evaluated before the main filter chain.
+ */
 @Configuration
 @Profile("local")
-class LocalSecurityConfig {
+class ItsmeStubSecurityConfig {
 
     @Bean
     @Order(1)

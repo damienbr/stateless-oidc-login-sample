@@ -2,10 +2,14 @@ package com.example.voltahome.demo;
 
 import java.util.Map;
 
+import com.example.voltahome.customer.Customer;
+import com.example.voltahome.customer.CustomerRepository;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.HtmlUtils;
 
 /** DEMO ONLY. In a real application, the frontend renders these pages. */
 @RestController
@@ -24,6 +28,12 @@ class DemoController {
             "fraud_suspected", "For your security, this login has been blocked. Never share your codes over the phone.");
     private static final String DEFAULT_MESSAGE = "An error occurred. Please try again.";
 
+    private final CustomerRepository customers;
+
+    DemoController(CustomerRepository customers) {
+        this.customers = customers;
+    }
+
     @GetMapping(value = "/", produces = MediaType.TEXT_HTML_VALUE)
     String home() {
         return page("""
@@ -33,10 +43,35 @@ class DemoController {
                 """);
     }
 
+    /** Protected page: DemoSecurityConfig only lets a request with a valid demo session cookie through. */
+    @GetMapping(value = "/portal", produces = MediaType.TEXT_HTML_VALUE)
+    String portal(@AuthenticationPrincipal DemoSession.LoggedInCustomer customer) {
+        String name = customers.findActiveById(customer.customerId())     // our customer data, not itsme's
+                .map(Customer::displayName)
+                .orElse(customer.customerId());
+        return page("""
+                <p>Welcome, %s.</p>
+                <table>
+                <tr><th>Customer number</th><td>%s</td></tr>
+                <tr><th>Logged in with</th><td>itsme</td></tr>
+                <tr><th>Authentication level</th><td>%s</td></tr>
+                <tr><th>Logged in at</th><td>%s</td></tr>
+                <tr><th>Session ends at</th><td>%s</td></tr>
+                </table>
+                <p><small>This page is protected. It is served only with a valid demo session cookie
+                (<code>demo/DemoSession</code>), which stands in for the application's own session or token.</small></p>
+                """.formatted(escape(name), escape(customer.customerId()), escape(customer.authenticationLevel()),
+                customer.loggedInAt(), customer.expiresAt()));
+    }
+
     @GetMapping(value = "/login-error", produces = MediaType.TEXT_HTML_VALUE)
     String loginError(@RequestParam(defaultValue = "") String error) {
         String message = MESSAGES.getOrDefault(error, DEFAULT_MESSAGE);   // fixed text only
         return page("<p class='error'>" + message + "</p><p><a href='/'>Back</a></p>");
+    }
+
+    private static String escape(String text) {
+        return text == null ? "" : HtmlUtils.htmlEscape(text);
     }
 
     private static String page(String content) {
@@ -44,7 +79,7 @@ class DemoController {
                 <!doctype html><html><head><meta charset="utf-8"><title>VoltaHome</title>
                 <style>body{font-family:sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem}
                 .button{display:inline-block;padding:.7rem 1.2rem;background:#2e7d32;color:#fff;border-radius:6px;text-decoration:none}
-                .error{color:#a00}</style></head><body><h1>VoltaHome</h1>
+                .error{color:#a00}th{text-align:left;padding-right:1rem}</style></head><body><h1>VoltaHome</h1>
                 """ + content + "</body></html>";
     }
 }
