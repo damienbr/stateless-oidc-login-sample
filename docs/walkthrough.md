@@ -34,7 +34,7 @@ Before reading any code, see the login work. It takes five minutes; the README's
 
 You land on a page called **itsme stub**. The application serves it itself, only when the `local` profile is active. It stands in for the approval in the itsme app, and it shows exactly what the application asked itsme for.
 
-Choose **Alex Martin — itsme linked to VoltaHome**. The browser returns to VoltaHome and shows the result of the login as JSON, with `"customerId": "C-1001"`.
+Choose **Alex Martin — itsme linked to VoltaHome**. The browser returns to VoltaHome and lands on the protected portal page, for customer `C-1001`. That page is a demo stand-in: the application's own session, issued after the itsme login, is what lets the customer in (see [Default 3](#default-3-there-is-no-session)).
 
 Now log in again and choose **Sam Peeters — VoltaHome customer, itsme not linked**. Sam is a customer, but VoltaHome has never seen this itsme account, so the login is refused: "This itsme account is not linked to a VoltaHome account." Then choose **Someone who is not a VoltaHome customer**: same answer. Without identification, the application cannot tell these two people apart, and it does not try. [Default 2](#default-2-the-user-is-a-pseudonym) explains why.
 

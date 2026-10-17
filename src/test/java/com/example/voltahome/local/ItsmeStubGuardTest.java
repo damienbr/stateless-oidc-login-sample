@@ -8,10 +8,10 @@ import com.example.voltahome.itsme.ItsmeProperties;
 import org.junit.jupiter.api.Test;
 
 /** README: "Run the login in a browser". The itsme stub must never run next to a real itsme environment. */
-class LocalProfileGuardTest {
+class ItsmeStubGuardTest {
 
     @Test
-    void localProfileIsRefusedWithARealItsmeEndpoint() {
+    void itsmeStubIsRefusedWithARealItsmeEndpoint() {
         ItsmeProperties properties = new ItsmeProperties("demo-client", ItsmeProperties.ClientAuthentication.PRIVATE_KEY_JWT,
                 null, "VOLTAHOME_LOGIN", "https://portal.voltahome.example/login/oauth2/code/itsme",
                 "http://itsme.services/v2/claim/acr_advanced",
@@ -19,7 +19,7 @@ class LocalProfileGuardTest {
                 new ItsmeProperties.ProxySettings("", 0),
                 new ItsmeProperties.Keys(true, null, null, null, List.of()));
 
-        assertThatThrownBy(() -> new LocalProfileGuard(properties))
+        assertThatThrownBy(() -> new ItsmeStubGuard(properties))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("localhost");
     }
