@@ -34,8 +34,8 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .securityContext(sc -> sc.securityContextRepository(new RequestAttributeSecurityContextRepository()))
             .requestCache(rc -> rc.requestCache(new NullRequestCache()))
-            // The sample has no form of its own: the itsme login is a GET redirect and a GET callback protected
-            // by "state". Keep your application's existing CSRF setup.
+            // This chain serves no form: the itsme login is a GET redirect and a GET callback protected by "state".
+            // (The portal's confirmation form has its own chain, with CSRF on.) Keep your application's existing CSRF setup.
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/", "/login-error", "/error").permitAll()

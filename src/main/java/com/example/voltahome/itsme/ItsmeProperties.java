@@ -18,7 +18,8 @@ public record ItsmeProperties(
         String acr,
         Endpoints endpoints,
         ProxySettings proxy,
-        Keys keys) {
+        Keys keys,
+        Confirmation confirmation) {
 
     /**
      * The two itsme client authentication methods. README: "Two client authentication methods".
@@ -51,10 +52,16 @@ public record ItsmeProperties(
     public record Keys(boolean ephemeral, String keystore, String keystorePassword,
                        String signingAlias, List<String> encryptionAliases) {}
 
+    /**
+     * README: "Confirmation of an operation". A separate itsme service, registered as a Confirmation service, with
+     * its own redirect URI inside the portal.
+     */
+    public record Confirmation(String serviceCode, String redirectUri) {}
+
     /** Keeps secrets out of logs and actuator output. */
     @Override
     public String toString() {
         return "ItsmeProperties[clientId=" + clientId + ", clientAuthentication=" + clientAuthentication
-                + ", serviceCode=" + serviceCode + ", endpoints=" + endpoints + ", clientSecret=***, keystorePassword=***]";
+                + ", serviceCode=" + serviceCode + ", confirmation=" + confirmation + ", endpoints=" + endpoints + ", clientSecret=***, keystorePassword=***]";
     }
 }

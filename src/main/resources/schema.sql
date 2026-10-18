@@ -30,3 +30,17 @@ CREATE TABLE IF NOT EXISTS itsme_authorization_request (
     expires_at        TIMESTAMP     NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_authreq_expires ON itsme_authorization_request (expires_at);
+
+-- Confirmation in progress (README: "Confirmation of an operation"): who started it, what is to be approved, and the
+-- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation is never read from the callback.
+CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
+    state               VARCHAR(128)   PRIMARY KEY,
+    customer_id         VARCHAR(64)    NOT NULL,
+    operation_reference VARCHAR(128)   NOT NULL,
+    approval_text       VARCHAR(7500)  NOT NULL,
+    nonce               VARCHAR(128)   NOT NULL,
+    code_verifier       VARCHAR(128)   NOT NULL,
+    created_at          TIMESTAMP      NOT NULL,
+    expires_at          TIMESTAMP      NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_itsme_confreq_expires ON itsme_confirmation_request (expires_at);

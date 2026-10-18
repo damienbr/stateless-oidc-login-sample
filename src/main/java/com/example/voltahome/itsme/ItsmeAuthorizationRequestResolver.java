@@ -1,6 +1,5 @@
 package com.example.voltahome.itsme;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -59,18 +58,6 @@ public class ItsmeAuthorizationRequestResolver implements OAuth2AuthorizationReq
         if (original == null || !useRequestObject) {
             return original;
         }
-        Map<String, Object> parameters = new LinkedHashMap<>(original.getAdditionalParameters());
-        parameters.put("request", requestObjects.create(original));
-
-        // Rebuilt from scratch so that the authorization URI includes the new parameter
-        return OAuth2AuthorizationRequest.authorizationCode()
-                .authorizationUri(original.getAuthorizationUri())
-                .clientId(original.getClientId())
-                .redirectUri(original.getRedirectUri())
-                .scopes(original.getScopes())
-                .state(original.getState())
-                .additionalParameters(parameters)      // nonce, code_challenge, code_challenge_method, request
-                .attributes(original.getAttributes())  // registration_id, nonce, code_verifier (used at callback)
-                .build();
+        return requestObjects.withRequestObject(original, ItsmeClaims.REQUESTED);
     }
 }

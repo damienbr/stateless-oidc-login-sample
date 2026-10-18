@@ -1,0 +1,51 @@
+# OPTIONAL: run the sample in a container instead of with a local JDK (README: "Run with Docker").
+# No image is built: the official Maven image (same Maven version as the wrapper, JDK 17) runs on a copy of the sources.
+# It uses "mvn" rather than ./mvnw: the wrapper's pinned checksum is for the .zip distribution, and without "unzip" (as in
+# this image) the wrapper downloads the .tar.gz instead, which fails that check.
+# The sources are mounted read-only and copied inside the container, so nothing is written to your checkout.
+#
+#   docker compose up demo                                   # browser demo, key pairs, http://localhost:8080
+#   docker compose --profile client-secret up demo-client-secret   # browser demo, client secret (same port)
+#   docker compose --profile verify run --rm verify          # build + all tests
+#
+# The itsme stub only runs with localhost endpoints and expects the application on http://localhost:8080:
+# keep the "8080:8080" port mapping.
+
+x-maven: &maven
+  image: maven:3.9.11-eclipse-temurin-17-noble
+  volumes:
+    - .:/src:ro
+    - maven-repository:/root/.m2              # dependencies, kept between runs
+  working_dir: /work
+  entrypoint:
+    - sh
+    - -c
+    - mkdir -p /work && tar -C /src --exclude=./target -cf - . | tar -C /work -xf - && exec mvn -B "$$@"
+    - mvn
+
+services:
+  demo:
+    <<: *maven
+    command: [spring-boot:run]
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+    ports:
+      - "8080:8080"
+
+  demo-client-secret:
+    <<: *maven
+    profiles: [client-secret]
+    command: [spring-boot:run]
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      ITSME_CLIENTAUTHENTICATION: client-secret
+    ports:
+      - "8080:8080"
+
+  verify:
+    <<: *maven
+    profiles: [verify]
+    command: [verify]
+
+volumes:
+  maven-repository:

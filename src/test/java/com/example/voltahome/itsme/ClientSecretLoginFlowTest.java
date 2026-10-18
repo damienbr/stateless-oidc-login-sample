@@ -3,7 +3,9 @@ package com.example.voltahome.itsme;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
@@ -15,6 +17,7 @@ import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
@@ -39,6 +42,7 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
 
     @Autowired ItsmeDiscoveryCheck discoveryCheck;
     @Autowired ObjectMapper json;
+    @Autowired ItsmeConfirmationService confirmation;
 
     @Override
     protected ItsmeWireMock.IdTokenBuilder idToken(String nonce) {
@@ -119,5 +123,22 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void discoveryCheckChecksTheClientSecretAlgorithms() {
         assertThat(discoveryCheck.check().status()).isEqualTo(ItsmeDiscoveryCheck.Status.OK);
+    }
+
+    // ------------------------------------------------------------------ confirmation (README "Confirmation of an operation")
+
+    @Test
+    void confirmationIsNotOfferedWithTheClientSecretMethod() throws Exception {
+        givenLinked("C-1001", "stub-sub-alex");
+        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+
+        openPortal(result)
+                .andExpect(status().isOk())
+                .andExpect(content().string(not(containsString("action=\"/portal/confirmation\""))));
+        assertThat(confirmation.isAvailable()).isFalse();
+        assertThatThrownBy(() -> confirmation.start(new MockHttpServletRequest(), "C-1001",
+                        new ItsmeOperation("op", ItsmeFreeText.builder().text("Operation").build())))
+                .isInstanceOfSatisfying(ItsmeConfirmationException.class,
+                        e -> assertThat(e.code()).isEqualTo("confirmation_unavailable"));
     }
 }
