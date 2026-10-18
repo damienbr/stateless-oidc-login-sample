@@ -28,6 +28,9 @@ itsme:
   proxy:
     host: ${OUTBOUND_PROXY_HOST:}                            # empty = direct connection
     port: ${OUTBOUND_PROXY_PORT:0}
+  confirmation:                                              # README "Confirmation of an operation"
+    service-code: ${ITSME_CONFIRMATION_SERVICE_CODE:VOLTAHOME_CONFIRM}   # registered at itsme as a Confirmation service
+    redirect-uri: ${ITSME_CONFIRMATION_REDIRECT_URI:https://portal.voltahome.example/portal/confirmation/callback}
   keys:                                                      # README "Keys"
     ephemeral: false
     keystore: ${ITSME_KEYSTORE:}                             # e.g. file:/run/secrets/itsme.p12, provided by a vault

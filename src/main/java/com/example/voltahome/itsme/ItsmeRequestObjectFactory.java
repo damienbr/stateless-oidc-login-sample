@@ -3,6 +3,7 @@ package com.example.voltahome.itsme;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -48,7 +49,27 @@ public class ItsmeRequestObjectFactory {
         this.itsmeJwkSource = itsmeJwkSource;
     }
 
-    public String create(OAuth2AuthorizationRequest request) {
+    /**
+     * The same request with the Request Object added, rebuilt from scratch so that the authorization URI includes it.
+     * @param idTokenClaims the "claims" requested in the ID token (login: ItsmeClaims.REQUESTED; confirmation: with the
+     *                      WYSIWYS template)
+     */
+    public OAuth2AuthorizationRequest withRequestObject(OAuth2AuthorizationRequest original,
+                                                        Map<String, Object> idTokenClaims) {
+        Map<String, Object> parameters = new LinkedHashMap<>(original.getAdditionalParameters());
+        parameters.put("request", create(original, idTokenClaims));
+        return OAuth2AuthorizationRequest.authorizationCode()
+                .authorizationUri(original.getAuthorizationUri())
+                .clientId(original.getClientId())
+                .redirectUri(original.getRedirectUri())
+                .scopes(original.getScopes())
+                .state(original.getState())
+                .additionalParameters(parameters)      // nonce, code_challenge, code_challenge_method, request
+                .attributes(original.getAttributes())  // registration_id, nonce, code_verifier (used at callback)
+                .build();
+    }
+
+    private String create(OAuth2AuthorizationRequest request, Map<String, Object> idTokenClaims) {
         try {
             Instant now = Instant.now();
             JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
@@ -63,7 +84,7 @@ public class ItsmeRequestObjectFactory {
                     .claim("redirect_uri", request.getRedirectUri())
                     .claim("state", request.getState())
                     .claim("acr_values", properties.acr())
-                    .claim("claims", Map.of("id_token", ItsmeClaims.REQUESTED));
+                    .claim("claims", Map.of("id_token", idTokenClaims));
             // nonce (as sent by Spring), code_challenge, code_challenge_method
             request.getAdditionalParameters().forEach(claims::claim);
 

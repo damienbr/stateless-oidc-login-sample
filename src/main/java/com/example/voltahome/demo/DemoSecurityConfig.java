@@ -4,11 +4,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.context.RequestAttributeSecurityContextRepository;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 
 /**
@@ -21,12 +21,17 @@ class DemoSecurityConfig {
     @Bean
     @Order(2)
     SecurityFilterChain portalFilterChain(HttpSecurity http, DemoSession session) throws Exception {
+        // CSRF token in a cookie, not in an HttpSession (stateless). Limited to the portal, like the session cookie.
+        CookieCsrfTokenRepository csrfTokens = new CookieCsrfTokenRepository();
+        csrfTokens.setCookiePath("/portal");
+        csrfTokens.setCookieCustomizer(cookie -> cookie.secure(true).sameSite("Lax"));
         http.securityMatcher("/portal", "/portal/**")
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .securityContext(sc -> sc.securityContextRepository(new RequestAttributeSecurityContextRepository()))
                 .requestCache(rc -> rc.requestCache(new NullRequestCache()))
-                // The portal only serves GET pages. A portal with forms needs CSRF protection.
-                .csrf(AbstractHttpConfigurer::disable)
+                // The portal has a form (the "Confirm with itsme" button, a POST): CSRF protection is on.
+                // The confirmation callback is a GET, protected by "state" like the login callback.
+                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens))
                 .addFilterBefore(new DemoSessionFilter(session), AnonymousAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 // Not logged in, or session expired: back to the home page and its login button

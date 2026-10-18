@@ -15,6 +15,8 @@ itsme:
     token-uri: http://localhost:8080/itsme-stub/v2/token
     jwk-set-uri: http://localhost:8080/itsme-stub/v2/jwks
     discovery-uri: http://localhost:8080/itsme-stub/v2/.well-known/openid-configuration
+  confirmation:
+    redirect-uri: http://localhost:8080/portal/confirmation/callback
   proxy:
     host: ""
   keys:

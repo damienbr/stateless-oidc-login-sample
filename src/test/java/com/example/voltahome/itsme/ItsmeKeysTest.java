@@ -16,7 +16,8 @@ class ItsmeKeysTest {
                 "http://itsme.services/v2/claim/acr_advanced",
                 new ItsmeProperties.Endpoints("https://idp.e2e.itsme.services/v2", null, null, null, null),
                 new ItsmeProperties.ProxySettings("", 0),
-                new ItsmeProperties.Keys(true, null, null, null, List.of()));
+                new ItsmeProperties.Keys(true, null, null, null, List.of()),
+                new ItsmeProperties.Confirmation("VOLTAHOME_CONFIRM", "https://portal.voltahome.example/portal/confirmation/callback"));
 
         assertThatThrownBy(() -> new ItsmeKeys(properties))
                 .isInstanceOf(IllegalStateException.class)

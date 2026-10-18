@@ -53,12 +53,29 @@ import org.springframework.web.client.RestClient;
 public class ItsmeClientConfig {
 
     public static final String REGISTRATION_ID = "itsme";
+    public static final String CONFIRMATION_REGISTRATION_ID = "itsme-confirmation";
 
     /** README: "Configuration". Static endpoints, no discovery fetch at startup. */
     @Bean
     ClientRegistrationRepository clientRegistrationRepository(ItsmeProperties p) {
+        return new InMemoryClientRegistrationRepository(
+                registration(p, REGISTRATION_ID, p.serviceCode(), p.redirectUri()));
+    }
+
+    /**
+     * README: "Confirmation of an operation". Same client, other itsme service and redirect URI. Deliberately NOT in
+     * the login's ClientRegistrationRepository: /oauth2/authorization/... cannot start a confirmation, and the login
+     * callback cannot end one.
+     */
+    static ClientRegistration confirmationRegistration(ItsmeProperties p) {
+        return registration(p, CONFIRMATION_REGISTRATION_ID,
+                p.confirmation().serviceCode(), p.confirmation().redirectUri());
+    }
+
+    private static ClientRegistration registration(ItsmeProperties p, String registrationId,
+                                                   String serviceCode, String redirectUri) {
         ItsmeProperties.Endpoints e = p.endpoints();
-        ClientRegistration.Builder itsme = ClientRegistration.withRegistrationId(REGISTRATION_ID)
+        ClientRegistration.Builder itsme = ClientRegistration.withRegistrationId(registrationId)
                 .clientId(p.clientId());
         if (p.usesKeyPairs()) {
             itsme.clientAuthenticationMethod(ClientAuthenticationMethod.PRIVATE_KEY_JWT);
@@ -71,14 +88,14 @@ public class ItsmeClientConfig {
         }
         itsme
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .redirectUri(p.redirectUri())
-                .scope("openid", "service:" + p.serviceCode())
+                .redirectUri(redirectUri)
+                .scope("openid", "service:" + serviceCode)
                 .issuerUri(e.issuer())                 // checked against "iss" by OidcIdTokenValidator
                 .authorizationUri(e.authorizationUri())
                 .tokenUri(e.tokenUri())
                 .jwkSetUri(e.jwkSetUri())
                 .userNameAttributeName(IdTokenClaimNames.SUB);
-        return new InMemoryClientRegistrationRepository(itsme.build());
+        return itsme.build();
     }
 
     /** README: "Token request". RestClient with an explicit outbound proxy (token endpoint, discovery check). */
@@ -117,7 +134,8 @@ public class ItsmeClientConfig {
     }
 
     /**
-     * README: "Token request". Spring adds the PKCE code_verifier in both methods.
+     * README: "Token request". Used by the login and by the confirmation. Spring adds the PKCE code_verifier in both
+     * methods.
      * - Key pairs (private_key_jwt): Spring builds and signs the client assertion (iss, sub, aud = token endpoint,
      *   jti, iat, exp) with our signing key.
      * - Client secret: Spring sends client_id and client_secret in the body; nothing to add.
@@ -129,9 +147,14 @@ public class ItsmeClientConfig {
         client.setRestClient(itsmeRestClient);
         if (properties.usesKeyPairs()) {
             client.addParametersConverter(new NimbusJwtClientAuthenticationParametersConverter<>(
-                    registration -> REGISTRATION_ID.equals(registration.getRegistrationId()) ? keys.signingKey() : null));
+                    registration -> isItsme(registration) ? keys.signingKey() : null));
         }
         return client;
+    }
+
+    private static boolean isItsme(ClientRegistration registration) {
+        return REGISTRATION_ID.equals(registration.getRegistrationId())
+                || CONFIRMATION_REGISTRATION_ID.equals(registration.getRegistrationId());
     }
 
     /** itsme public keys (signature of ID tokens, encryption of Request Objects), through the proxy, cached by Nimbus. */

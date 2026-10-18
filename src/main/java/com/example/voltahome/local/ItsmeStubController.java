@@ -122,18 +122,30 @@ class ItsmeStubController {
         } else {
             params.putAll(query);
         }
+        // Registered redirect URIs: the login's, and the confirmation's
+        boolean confirmation = String.valueOf(params.get("scope"))
+                .contains("service:" + properties.confirmation().serviceCode());
+        String registeredRedirectUri = confirmation ? properties.confirmation().redirectUri() : properties.redirectUri();
         if (!properties.clientId().equals(params.get("client_id"))
-                || !properties.redirectUri().equals(params.get("redirect_uri"))
+                || !registeredRedirectUri.equals(params.get("redirect_uri"))
                 || !"S256".equals(params.get("code_challenge_method"))
                 || params.get("code_challenge") == null) {
             return badRequest("Wrong client_id or redirect_uri, or missing PKCE (S256).");
+        }
+        String approvalText = null;
+        if (confirmation) {
+            // itsme Confirmation: a Request Object is required, and so is a WYSIWYS template
+            approvalText = freeText(params.get("claims"));
+            if (!fromRequestObject || approvalText == null) {
+                return badRequest("Confirmation: a Request Object with the free_text WYSIWYS template is required.");
+            }
         }
         Authorization authorization = new Authorization(str(params.get("redirect_uri")), str(params.get("state")),
                 str(params.get("nonce")), str(params.get("code_challenge")), str(params.get("acr_values")),
                 Instant.now().plus(Duration.ofMinutes(5)));
         String id = randomValue();
         pendingAuthorizations.put(id, authorization);
-        return ResponseEntity.ok(page(chooser(id, query, params, fromRequestObject)));
+        return ResponseEntity.ok(page(chooser(id, query, params, fromRequestObject, approvalText)));
     }
 
     @PostMapping("/authorization/approve")
@@ -231,8 +243,18 @@ class ItsmeStubController {
 
     // ------------------------------------------------------------------ page
 
-    private String chooser(String id, Map<String, String> query, Map<String, Object> params, boolean fromRequestObject) {
-        StringBuilder html = new StringBuilder().append("<h2>What the application asked for</h2>");
+    private String chooser(String id, Map<String, String> query, Map<String, Object> params, boolean fromRequestObject,
+                           String approvalText) {
+        StringBuilder html = new StringBuilder();
+        if (approvalText != null) {
+            // Shown as source text, not rendered: the stub never interprets HTML sent by the application
+            html.append("<h2>Operation to approve</h2>")
+                    .append("<p>The itsme app would show this text (free_text template; tags b, i, u, br):</p>")
+                    .append("<pre class='approval'>").append(esc(approvalText)).append("</pre>")
+                    .append("<p class='note'>Choosing an account below approves the operation with that account. ")
+                    .append("Only the itsme account linked to the logged-in customer is accepted.</p>");
+        }
+        html.append("<h2>What the application asked for</h2>");
         if (fromRequestObject) {
             html.append("<p>Read from the <strong>Request Object</strong>, decrypted with the stub's private key ")
                     .append("and verified with the application's public key. Editing the browser URL cannot change it.</p>");
@@ -258,6 +280,21 @@ class ItsmeStubController {
         html.append("<form method='post' action='/itsme-stub/v2/authorization/cancel'>").append(hidden("id", id))
                 .append("<button type='submit' class='cancel'>Cancel (the user refuses)</button></form>");
         return html.toString();
+    }
+
+    /** The text of the free_text template, if the claims request one (essential, under "id_token"). */
+    private static String freeText(Object claims) {
+        if (!(claims instanceof Map<?, ?> all) || !(all.get("id_token") instanceof Map<?, ?> idToken)) {
+            return null;
+        }
+        Object template = idToken.get(ItsmeClaims.APPROVAL_TEMPLATE_NAME);
+        Object text = idToken.get(ItsmeClaims.APPROVAL_TEXT);
+        if (!(template instanceof Map<?, ?> t) || !(text instanceof Map<?, ?> x)
+                || !ItsmeClaims.FREE_TEXT_TEMPLATE.equals(t.get("value"))
+                || !Boolean.TRUE.equals(t.get("essential")) || !Boolean.TRUE.equals(x.get("essential"))) {
+            return null;
+        }
+        return str(x.get("value"));
     }
 
     private static String str(Object value) {
@@ -315,6 +352,7 @@ class ItsmeStubController {
                   table{border-collapse:collapse;margin:1rem 0}th,td{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top}
                   code{word-break:break-all}form{margin:.4rem 0}button{width:100%;padding:.6rem;text-align:left;cursor:pointer}
                   .cancel{margin-top:1rem}.error{color:#a00}.note{color:#555}
+                  .approval{background:#fafafa;border:1px solid #ccc;padding:.75rem;white-space:pre-wrap}
                 </style></head><body>
                 <h1>itsme stub (local test double)</h1>
                 <p class="banner">Local development only. This page stands in for the approval in the itsme app.

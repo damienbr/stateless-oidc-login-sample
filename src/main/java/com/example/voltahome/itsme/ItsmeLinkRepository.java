@@ -25,6 +25,12 @@ public class ItsmeLinkRepository {
                 .param("sub", sub).query(String.class).optional();
     }
 
+    /** README: "Confirmation of an operation". The itsme account that may confirm the customer's operations. */
+    public Optional<String> findSubByCustomer(String customerId) {
+        return jdbc.sql("SELECT itsme_sub FROM itsme_link WHERE customer_id = :id")
+                .param("id", customerId).query(String.class).optional();
+    }
+
     public void touch(String customerId, Instant now) {
         jdbc.sql("UPDATE itsme_link SET last_login_at = :now WHERE customer_id = :id")
                 .param("id", customerId).param("now", Timestamp.from(now)).update();

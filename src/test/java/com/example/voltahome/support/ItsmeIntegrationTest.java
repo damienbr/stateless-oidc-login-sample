@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
+import com.example.voltahome.demo.DemoConfirmedOperations;
 import com.example.voltahome.demo.DemoSession;
 import com.example.voltahome.fraud.FraudService;
 import com.example.voltahome.itsme.ItsmeKeys;
@@ -45,6 +46,7 @@ public abstract class ItsmeIntegrationTest {
 
     protected static final String CLIENT_ID = "test-client";
     protected static final String CALLBACK = "/login/oauth2/code/itsme";
+    protected static final String CONFIRMATION_CALLBACK = "/portal/confirmation/callback";
 
     /**
      * One WireMock server for the whole test run. A JUnit extension per test class would restart it on a new port,
@@ -65,6 +67,7 @@ public abstract class ItsmeIntegrationTest {
     static void itsmeProperties(DynamicPropertyRegistry registry) {
         registry.add("itsme.client-id", () -> CLIENT_ID);
         registry.add("itsme.redirect-uri", () -> "http://localhost" + CALLBACK);   // MockMvc host
+        registry.add("itsme.confirmation.redirect-uri", () -> "http://localhost" + CONFIRMATION_CALLBACK);
         registry.add("itsme.endpoints.issuer", () -> itsme.baseUrl() + "/v2");
         registry.add("itsme.endpoints.authorization-uri", () -> itsme.baseUrl() + "/v2/authorization");
         registry.add("itsme.endpoints.token-uri", () -> itsme.baseUrl() + "/v2/token");
@@ -79,11 +82,14 @@ public abstract class ItsmeIntegrationTest {
     @Autowired protected FraudService fraud;
     @Autowired protected MutableClock clock;
     @Autowired protected ItsmeKeys keys;
+    @Autowired protected DemoConfirmedOperations confirmedOperations;
 
     @BeforeEach
     void resetState() {
         jdbc.sql("DELETE FROM itsme_link").update();
         jdbc.sql("DELETE FROM itsme_authorization_request").update();
+        jdbc.sql("DELETE FROM itsme_confirmation_request").update();
+        confirmedOperations.clear();
         fraud.clear();
         clock.reset();
         itsme.resetAll();
