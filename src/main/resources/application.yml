@@ -30,7 +30,7 @@ itsme:
     port: ${OUTBOUND_PROXY_PORT:0}
   confirmation:                                              # README "Confirmation of an operation"
     service-code: ${ITSME_CONFIRMATION_SERVICE_CODE:VOLTAHOME_CONFIRM}   # registered at itsme as a Confirmation service
-    redirect-uri: ${ITSME_CONFIRMATION_REDIRECT_URI:https://portal.voltahome.example/portal/confirmation/callback}
+    redirect-uri: ${ITSME_CONFIRMATION_REDIRECT_URI:https://portal.voltahome.example/itsme/confirmation/callback}
   keys:                                                      # README "Keys"
     ephemeral: false
     keystore: ${ITSME_KEYSTORE:}                             # e.g. file:/run/secrets/itsme.p12, provided by a vault
@@ -38,8 +38,14 @@ itsme:
     signing-alias: voltahome-sig
     encryption-aliases: voltahome-enc
 
+# Where the backend sends the browser back to the SPA at the end of an itsme flow (README: "Hand-over"): the
+# hand-over URLs get a one-time code in the fragment (#handover=..., #confirmation=...), the error URLs ?error=<code>.
+# Fixed configuration, never taken from a request (no open redirect).
 app:
+  login-handover-url: /
   login-error-url: /login-error
+  confirmation-handover-url: /
+  confirmation-error-url: /confirmation-error
 
 logging:
   level:

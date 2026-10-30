@@ -18,7 +18,7 @@ The [README](../README.md) is the reference for behaviour, and the [walkthrough]
 - [8. Checking the ID token](#8-checking-the-id-token)
 - [9. Turning the ID token into a user](#9-turning-the-id-token-into-a-user)
 - [10. The end of the login: success or failure](#10-the-end-of-the-login-success-or-failure)
-- [11. After the login: the protected portal](#11-after-the-login-the-protected-portal)
+- [11. After the login: the protected API](#11-after-the-login-the-protected-api)
 - [12. Confirming an operation from the portal](#12-confirming-an-operation-from-the-portal)
 - [Index](#index)
 
@@ -39,11 +39,11 @@ For the itsme login, three filters matter:
 
 | Filter (Spring class) | Reacts to | What it does |
 |---|---|---|
-| `OAuth2AuthorizationRequestRedirectFilter` | `GET /oauth2/authorization/itsme` | Prepares the login and redirects the browser to itsme. |
+| `OAuth2AuthorizationRequestRedirectFilter` | `POST /oauth2/authorization/itsme` (a form POST from the SPA) | Prepares the login and redirects the browser to itsme. |
 | `OAuth2LoginAuthenticationFilter` | `GET /login/oauth2/code/itsme` (the callback) | Exchanges the code for an ID token, checks it, finds the customer, ends the login. |
 | `AuthorizationFilter` | Every other request | Lets the request through or refuses it, according to the rules in `authorizeHttpRequests`. |
 
-The protected portal has its own small chain, with one filter of ours, described in [section 11](#11-after-the-login-the-protected-portal). Apart from that one, you never create these filters yourself. `oauth2Login()` and `authorizeHttpRequests()` in `SecurityConfig` add them, and the classes described below are the pieces you plug into them.
+The protected API has its own small chain, described in [section 11](#11-after-the-login-the-protected-api). You never create these filters yourself. `oauth2Login()` and `authorizeHttpRequests()` in `SecurityConfig` add them, and the classes described below are the pieces you plug into them.
 
 ## 1. Building the filter chain
 
@@ -69,8 +69,10 @@ An application may have several `SecurityFilterChain` beans. For each request, S
 
 The list of access rules, read from top to bottom; the first matching rule wins:
 
-- `requestMatchers("/", "/login-error", "/error").permitAll()`: the home page and the error pages are public;
+- `requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()`: the SPA's page and its error routes are public;
 - `requestMatchers("/.well-known/jwks.json").permitAll()`: itsme must be able to download our public keys without logging in;
+- `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the verifier protect it (README: "Hand-over");
+- `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential, is protected by `state`, and executes nothing;
 - `anyRequest().authenticated()`: everything else requires a logged-in user.
 
 The two login URLs (`/oauth2/authorization/itsme` and the callback) do not need a rule: their filters run earlier in the chain and answer before the `AuthorizationFilter` is reached.
@@ -87,7 +89,7 @@ Tells Spring Security never to create an `HttpSession` and never to use one to f
 
 **`RequestAttributeSecurityContextRepository`** (Spring) — *file: `security/SecurityConfig.java`*
 
-After a successful login, Spring stores "who is logged in" (the `SecurityContext`) in a *security context repository*. The default one, `HttpSessionSecurityContextRepository`, puts it in the session, so that the next request finds the user again. This replacement puts it in a request attribute instead: it lives only until the end of the current request. In other words, the login result is **not remembered** for the next request. That is intended: remembering the customer is the job of the application's own token, issued at the hand-over (see [section 11](#11-after-the-login-the-protected-portal)).
+After a successful login, Spring stores "who is logged in" (the `SecurityContext`) in a *security context repository*. The default one, `HttpSessionSecurityContextRepository`, puts it in the session, so that the next request finds the user again. This replacement puts it in a request attribute instead: it lives only until the end of the current request. In other words, the login result is **not remembered** for the next request. That is intended: remembering the customer is the job of the application's own token, issued at the hand-over (see [section 11](#11-after-the-login-the-protected-api)).
 
 **`NullRequestCache`** (Spring) — *files: `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`*
 
@@ -126,11 +128,13 @@ Constants for the standard claim names of an ID token. The sample uses `IdTokenC
 
 ## 5. Step one: sending the customer to itsme
 
-The customer clicks "Log in with itsme", which opens `/oauth2/authorization/itsme`.
+The customer clicks "Log in with itsme". The SPA puts a random verifier in a hidden field and submits a form to `/oauth2/authorization/itsme` (README: "Hand-over").
 
 **`OAuth2AuthorizationRequestRedirectFilter`** (Spring) — *not in our code; added by `oauth2Login()`*
 
 The filter that reacts to `/oauth2/authorization/{registrationId}`. It asks a *resolver* to build the authorization request, asks a *repository* to remember it, and redirects the browser to itsme. The sample replaces both the resolver and the repository. It also uses the filter's constant `DEFAULT_AUTHORIZATION_REQUEST_BASE_URI` (`/oauth2/authorization`), so that the resolver recognises the same URL as the filter.
+
+Our resolver also begins the hand-over: when the request is a POST with a valid verifier, it calls `ItsmeHandover.begin` with the `state` Spring has just generated. It does not refuse anything: a login started otherwise simply has nothing to hand over at the end ([section 10](#10-the-end-of-the-login-success-or-failure)).
 
 **`OAuth2AuthorizationRequest`** (Spring) — *files: several in `itsme/`*
 
@@ -276,80 +280,61 @@ Spring's general object for "someone who has proven who they are". After an OAut
 
 **`AuthenticationSuccessHandler`** (Spring interface) and **`ItsmeLoginSuccessHandler`** (ours) — *file: `itsme/ItsmeLoginSuccessHandler.java`*
 
-Called once, when the login has succeeded; it writes the HTTP response. Spring's default redirects to the page saved in the request cache, which is a session feature. Ours builds an `ItsmeLoginResult` (customer id, method, level, time; no itsme claim) and passes it to `LoginHandover`.
+Called once, when the login has succeeded; it writes the HTTP response. Spring's default redirects to the page saved in the request cache, which is a session feature. Ours builds an `ItsmeLoginResult` (customer id, method, level, time; no itsme claim) and completes the hand-over with it: `ItsmeHandover.complete`, with the `state` of the callback request, which Spring has just checked. It redirects to the SPA with the one-time code in the URL fragment, or to `/login-error?error=invalid_request` when the login was not begun with a verifier. The callback is a browser navigation: it cannot answer with JSON.
 
 **`LoginHandover`** (ours, an interface) — *file: `itsme/LoginHandover.java`*
 
-The boundary between the itsme integration and the rest of the application (README: "Hand-over"). A real application implements it to issue its own session or token and redirect to its portal. In this sample, `demo/DemoLoginHandover` does the same with a demo stand-in: a signed cookie and a redirect to `/portal` ([section 11](#11-after-the-login-the-protected-portal)).
+The boundary between the itsme integration and the rest of the application (README: "Hand-over"). It is called when the SPA redeems the one-time code with its verifier (`ItsmeLoginHandoverController`, `POST /itsme/login/handover`, an AJAX call), and returns the JSON body of the answer. A real application implements it to issue its own token. In this sample, `demo/DemoLoginHandover` does the same with a demo stand-in: a signed JWT, used as a bearer token ([section 11](#11-after-the-login-the-protected-api)).
 
 **`AuthenticationException`** (Spring) and **`AuthenticationFailureHandler`** (Spring interface), with **`ItsmeLoginFailureHandler`** (ours) — *file: `itsme/ItsmeLoginFailureHandler.java`*
 
-`AuthenticationException` is the parent of every "login refused" exception. The failure handler is called with it when any step fails: unknown `state`, token error, invalid ID token, unknown customer. Ours logs the error code and its description, then redirects to `/login-error?error=<code>`. The error page shows a fixed message for each code and never displays the raw parameter (README: "Error codes").
+`AuthenticationException` is the parent of every "login refused" exception. The failure handler is called with it when any step fails: unknown `state`, token error, invalid ID token, unknown customer. Ours logs the error code and its description, then redirects to `/login-error?error=<code>`, an SPA route. The SPA shows a fixed message for each code and never displays the raw parameter (README: "Error codes").
 
-## 11. After the login: the protected portal
+## 11. After the login: the protected API
 
-A common question: after a successful itsme login, how does the customer open a protected page?
+A common question: after a successful itsme login, how does the SPA call a protected API?
 
-**Not through the itsme login itself.** `RequestAttributeSecurityContextRepository` keeps the logged-in user only for the duration of the callback request; on the next request, Spring knows nobody. Remembering the customer is the job of the application's own credential (its session or its own token), issued at the hand-over. Issuing it is out of scope of the sample, so the `demo` package provides a stand-in, to show the whole journey (README: "Hand-over"):
+**Not through the itsme login itself.** `RequestAttributeSecurityContextRepository` keeps the logged-in user only for the duration of the callback request; on the next request, Spring knows nobody. Remembering the customer is the job of the application's own credential (here its own token), issued at the hand-over. Issuing it is out of scope of the sample, so the `demo` package provides a stand-in, to show the whole journey (README: "Hand-over"):
 
-1. `DemoLoginHandover` sets a cookie holding a JWT signed by the application, and redirects to `/portal`.
-2. The browser opens `/portal` with the cookie.
-3. A second filter chain, dedicated to `/portal/**`, checks the cookie and lets the request through.
+1. The SPA redeems the one-time code; `DemoLoginHandover` returns a JWT signed by the application, as JSON.
+2. The SPA keeps it in `sessionStorage` and sends it on every API call, in the `Authorization: Bearer` header. No cookie.
+3. A second filter chain, dedicated to `/api/**`, checks the token and lets the request through.
 
 **`DemoSecurityConfig`** (ours) — *file: `demo/DemoSecurityConfig.java`*
 
-A second `SecurityFilterChain`, like `ItsmeStubSecurityConfig` in [section 1](#1-building-the-filter-chain). Its `securityMatcher("/portal", "/portal/**")` means it handles only portal URLs; `@Order(2)` makes Spring try it before the main chain. It is stateless in the same way as the main chain ([section 3](#3-staying-stateless)), requires an authenticated user for every portal URL, and adds `DemoSessionFilter` to read the cookie. Unlike the main chain, it keeps CSRF protection on, because the portal has a form ([section 12](#12-confirming-an-operation-from-the-portal)).
+A second `SecurityFilterChain`, like `ItsmeStubSecurityConfig` in [section 1](#1-building-the-filter-chain). Its `securityMatcher("/api/**")` means it handles only API URLs; `@Order(2)` makes Spring try it before the main chain. It is stateless in the same way as the main chain ([section 3](#3-staying-stateless)) and requires an authenticated user for every API URL. CSRF protection is off, like in the main chain: the browser never sends the token by itself (it is not a cookie), so a forged cross-site request carries no credential.
 
-**`OncePerRequestFilter`** (Spring, from `spring-web`) and **`DemoSessionFilter`** (ours) — *file: `demo/DemoSessionFilter.java`*
+**`oauth2ResourceServer(rs -> rs.jwt(...))`** (Spring configuration, which adds a `BearerTokenAuthenticationFilter`) — *file: `demo/DemoSecurityConfig.java`*
 
-`OncePerRequestFilter` is a convenient base class for a servlet filter that must run exactly once per request. `DemoSessionFilter` extends it: if the request carries a valid demo session cookie, it tells Spring Security "this request comes from customer C-1001"; otherwise it does nothing, and the request continues as anonymous. It checks the cookie on every request, so nothing needs to be stored on the server.
+Spring's support for an API protected by bearer tokens ("resource server", from the `spring-boot-starter-security-oauth2-resource-server` starter). On each request, `BearerTokenAuthenticationFilter` reads the `Authorization: Bearer` header and decodes the token with the given `JwtDecoder` (here `DemoToken.decoder()`). If the token is valid, the request is authenticated with a `JwtAuthenticationToken`, whose principal is the decoded `Jwt`. If the token is missing, forged or expired, the chain answers 401 with a `WWW-Authenticate: Bearer` header (`BearerTokenAuthenticationEntryPoint`). Nothing is stored between requests: the token is checked every time.
 
-The filter is created with `new` inside `DemoSecurityConfig`, not declared as a `@Component`. A filter that is a Spring bean is also registered by Spring Boot as a servlet filter for every URL, outside the security chain, which is rarely what you want.
+**`DemoToken`** (ours), with **`NimbusJwtDecoder.withSecretKey(...)`, `MacAlgorithm`, `JwtIssuerValidator`** (Spring) — *file: `demo/DemoToken.java`*
 
-**`addFilterBefore(..., AnonymousAuthenticationFilter.class)`** (Spring configuration) — *file: `demo/DemoSecurityConfig.java`*
-
-Places our filter at a precise position in the chain. `AnonymousAuthenticationFilter` (Spring) is the filter that marks a request as "anonymous" when no earlier filter has authenticated it. Our filter must run just before it: if the cookie is valid, the request is already authenticated when the anonymous filter runs, and that filter leaves it alone.
-
-**`SecurityContextHolder`, `SecurityContextHolderStrategy`, `SecurityContext`** (Spring) — *file: `demo/DemoSessionFilter.java`*
-
-The `SecurityContext` holds the `Authentication` of the current request. The `SecurityContextHolder` is where Spring keeps it while the request is processed, so that any later filter or controller can ask "who is this?". The filter creates an empty context, puts the authentication in it and stores it through the holder's *strategy* (the recommended way since Spring Security 5.8, instead of the static methods). Spring clears it at the end of the request.
-
-**`PreAuthenticatedAuthenticationToken`** (Spring) — *file: `demo/DemoSessionFilter.java`*
-
-An `Authentication` that means "this user was authenticated by someone else, earlier". It fits exactly: the customer proved who they were during the itsme login, and the cookie is the proof of it. Its principal is a `DemoSession.LoggedInCustomer` (customer id, level, login time, expiry), with the authority `ROLE_CUSTOMER`.
-
-**The entry point lambda in `exceptionHandling(...)`** (Spring configuration, an `AuthenticationEntryPoint`) — *file: `demo/DemoSecurityConfig.java`*
-
-When an anonymous request reaches a URL that requires a login, Spring calls the *authentication entry point* to decide what to answer. In the main chain, `oauth2Login()` provides one that starts the itsme login. The portal chain has no login of its own, so its entry point simply redirects the browser to the home page, where the "Log in with itsme" button is.
-
-**`DemoSession`** (ours), with **`NimbusJwtDecoder.withSecretKey(...)`, `MacAlgorithm`, `JwtIssuerValidator`, `JwtException`** (Spring) — *file: `demo/DemoSession.java`*
-
-`DemoSession` issues and reads the cookie. The cookie value is a JWT signed with a key only the application knows (HMAC SHA-256), so the customer can read it but cannot change it. To read it, it reuses the Spring classes of [section 8](#8-checking-the-id-token), configured for this simpler token:
+`DemoToken` issues the token and provides its decoder. The token is a JWT signed with a key only the application knows (HMAC SHA-256), so the customer can read it but cannot change it. To check it, it reuses the Spring classes of [section 8](#8-checking-the-id-token), configured for this simpler token:
 
 - `NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256)`: a decoder that accepts only `HS256` with our key, so an unsigned token (`alg: none`) or a token signed with any other key is refused;
-- `JwtTimestampValidator` with the application clock: refuses an expired session;
-- `JwtIssuerValidator`: refuses a token that is not a demo session;
-- `JwtException`: the parent of every decoding or validation error; `DemoSession` catches it and treats the request as not logged in.
+- `JwtTimestampValidator` with the application clock: refuses an expired token;
+- `JwtIssuerValidator`: refuses a token that is not a demo token.
 
-**`@AuthenticationPrincipal`** (Spring annotation) — *file: `demo/DemoController.java`*
+**`@AuthenticationPrincipal`** (Spring annotation) — *files: `demo/DemoController.java`, `demo/DemoConfirmationController.java`*
 
-Placed on a controller method parameter, it injects the principal of the current `Authentication`, here the `LoggedInCustomer` set by the filter. The portal page uses it to know which customer to show.
+Placed on a controller method parameter, it injects the principal of the current `Authentication`, here the decoded `Jwt`. Its subject (`getSubject()`) is our customer id: the API uses it to know which customer to serve, never a request parameter.
 
-`DemoSessionTest` lists the attacks on the demo cookie: missing, expired, edited to another customer, signed with another key, unsigned.
+`DemoTokenTest` lists the attacks on the demo token: missing, expired, edited to another customer, signed with another key, unsigned.
 
-Remember that everything in this section is a demo stand-in. A real application keeps its existing session or token management, plugged in behind `LoginHandover`.
+Remember that everything in this section is a demo stand-in. A real application keeps its existing token management, plugged in behind `LoginHandover`.
 
 ## 12. Confirming an operation from the portal
 
-A logged-in customer clicks "Confirm with itsme" and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, Request Object, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
+A logged-in customer clicks "Confirm with itsme" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, Request Object, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
-Two methods. `start` builds the authorization request and stores the confirmation in progress; `complete` checks itsme's answer and returns the confirmed operation, or throws `ItsmeConfirmationException`. After Spring's checks, it makes the checks that decide whether the approval counts: the customer ending the confirmation is the one who started it, and the itsme account that approved it is the one linked to that customer.
+Three methods, the three steps of README "Hand-over". `start` (the SPA's API call) builds the authorization request, stores the confirmation in progress and begins the hand-over with the SPA's verifier. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer and completes the hand-over; it executes nothing, because the callback carries no credential. `redeem` (the SPA's API call) returns the confirmed operation, which is executed then. After Spring's checks, the service makes the checks that decide whether the approval counts: the itsme account that approved it is the one linked to the customer who started it, and the customer who redeems it is that customer.
 
 **`ClientRegistration`, built by `ItsmeClientConfig.confirmationRegistration`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
-A second registration with the same client id, the confirmation's itsme service and its own redirect URI (`/portal/confirmation/callback`). It is deliberately **not** in the `ClientRegistrationRepository` of [section 4](#4-describing-itsme-to-spring). `/oauth2/authorization/itsme-confirmation` therefore starts nothing, and the login callback cannot end a confirmation.
+A second registration with the same client id, the confirmation's itsme service and its own redirect URI (`/itsme/confirmation/callback`). It is deliberately **not** in the `ClientRegistrationRepository` of [section 4](#4-describing-itsme-to-spring). `/oauth2/authorization/itsme-confirmation` therefore starts nothing, and the login callback cannot end a confirmation.
 
 **`DefaultOAuth2AuthorizationRequestResolver`** and **`OAuth2AuthorizationRequestCustomizers.withPkce()`** (Spring) — *file: `itsme/ItsmeConfirmationService.java`*
 
@@ -367,26 +352,19 @@ The provider that `OAuth2LoginAuthenticationFilter` uses for the login ([section
 
 The provider's input and output. The exchange pairs the request we sent, rebuilt from the stored values, with the response that came back on the callback URL (`code` or `error`, and `state`). `OAuth2LoginAuthenticationToken` carries the registration and the exchange in, and the checked ID token out. Despite its name, it logs nobody in here.
 
-**`CookieCsrfTokenRepository`, `CsrfToken`** (Spring) — *files: `demo/DemoSecurityConfig.java`, `demo/DemoController.java`*
-
-The button is a POST form, so the portal chain has CSRF protection: a request that changes something must carry a token that a page from another site cannot know. The default repository keeps the token in the `HttpSession`. `CookieCsrfTokenRepository` keeps it in a cookie instead (`XSRF-TOKEN`, `HttpOnly`, path `/portal`), so the backend stays stateless. Declared as a controller method parameter, `CsrfToken` gives the portal page the parameter name and the token value for the hidden form field. The callback is a GET; like the login callback, it is protected by `state`.
-
-In the tests, Spring Security's `csrf()` request post-processor is **not** used: it replaces the token repository of the shared filter chain with one backed by the `HttpSession`, and `noSessionIsCreatedDuringTheWholeFlow` then fails. The tests submit the form like a browser does: the cookie and the token read from the page.
-
 `ItsmeConfirmationFlowTest` lists the attacks on the confirmation.
 
 ## Index
 
 | Class | Kind | Section | Where |
 |---|---|---|---|
-| `AbstractHttpConfigurer` | Spring | [1](#1-building-the-filter-chain) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java` |
+| `AbstractHttpConfigurer` | Spring | [1](#1-building-the-filter-chain) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `AcrValidator` | ours | [8](#8-checking-the-id-token) | `itsme/AcrValidator.java` |
-| `AnonymousAuthenticationFilter` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSecurityConfig.java` |
 | `Authentication` | Spring | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginSuccessHandler.java` |
-| `AuthenticationEntryPoint` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSecurityConfig.java` (lambda) |
+| `AuthenticationEntryPoint` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoSecurityConfig.java` (the resource server's default, `BearerTokenAuthenticationEntryPoint`) |
 | `AuthenticationException` | Spring | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginFailureHandler.java` |
 | `AuthenticationFailureHandler` | Spring | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginFailureHandler.java` |
-| `@AuthenticationPrincipal` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoController.java`, `demo/DemoConfirmationController.java` |
+| `@AuthenticationPrincipal` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoController.java`, `demo/DemoConfirmationController.java` |
 | `AuthenticationSuccessHandler` | Spring | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginSuccessHandler.java` |
 | `AuthorizationGrantType` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
 | `AuthorizationRequestRepository` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java` |
@@ -394,14 +372,12 @@ In the tests, Spring Security's `csrf()` request post-processor is **not** used:
 | `ClientAuthenticationMethod` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
 | `ClientRegistration` | Spring | [4](#4-describing-itsme-to-spring), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeClientConfig.java` |
 | `ClientRegistrationRepository` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
-| `CookieCsrfTokenRepository` | Spring | [12](#12-confirming-an-operation-from-the-portal) | `demo/DemoSecurityConfig.java` |
-| `CsrfToken` | Spring | [12](#12-confirming-an-operation-from-the-portal) | `demo/DemoController.java` |
 | `DefaultOAuth2AuthorizationRequestResolver` | Spring | [5](#5-step-one-sending-the-customer-to-itsme), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeAuthorizationRequestResolver.java`, `itsme/ItsmeConfirmationService.java` |
 | `DefaultOidcUser` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeConfirmationService.java` |
-| `DelegatingOAuth2TokenValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoSession.java` |
-| `DemoSecurityConfig` | ours (demo) | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSecurityConfig.java` |
-| `DemoSession` | ours (demo) | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSession.java` |
-| `DemoSessionFilter` | ours (demo) | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
+| `BearerTokenAuthenticationFilter` | Spring | [11](#11-after-the-login-the-protected-api) | added by `oauth2ResourceServer()` in `demo/DemoSecurityConfig.java` |
+| `DelegatingOAuth2TokenValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
+| `DemoSecurityConfig` | ours (demo) | [11](#11-after-the-login-the-protected-api) | `demo/DemoSecurityConfig.java` |
+| `DemoToken` | ours (demo) | [11](#11-after-the-login-the-protected-api) | `demo/DemoToken.java` |
 | `HttpSecurity` | Spring | [1](#1-building-the-filter-chain) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `IdTokenClaimNames` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java`, `itsme/ItsmeOidcUserService.java` |
 | `InMemoryClientRegistrationRepository` | Spring | [4](#4-describing-itsme-to-spring), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeClientConfig.java`, `itsme/ItsmeConfirmationService.java` |
@@ -414,16 +390,16 @@ In the tests, Spring Security's `csrf()` request post-processor is **not** used:
 | `ItsmeStubSecurityConfig` | ours (local) | [1](#1-building-the-filter-chain) | `local/ItsmeStubSecurityConfig.java` |
 | `JdbcAuthorizationRequestRepository` | ours | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java` |
 | `JdbcConfirmationRequestRepository` | ours | [12](#12-confirming-an-operation-from-the-portal) | `itsme/JdbcConfirmationRequestRepository.java` |
-| `Jwt` | Spring | [8](#8-checking-the-id-token) | `itsme/AcrValidator.java`, `demo/DemoSession.java` |
-| `JwtDecoder` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java` |
+| `Jwt` | Spring | [8](#8-checking-the-id-token), [11](#11-after-the-login-the-protected-api) | `itsme/AcrValidator.java`, `demo/DemoController.java`, `demo/DemoConfirmationController.java` |
+| `JwtAuthenticationToken` | Spring | [11](#11-after-the-login-the-protected-api) | created by `BearerTokenAuthenticationFilter` |
+| `JwtDecoder` | Spring | [8](#8-checking-the-id-token), [11](#11-after-the-login-the-protected-api) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
 | `JwtDecoderFactory` | Spring | [8](#8-checking-the-id-token), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeClientConfig.java`, `itsme/ItsmeConfirmationService.java` |
-| `JwtException` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSession.java` |
-| `JwtIssuerValidator` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSession.java` |
-| `JwtTimestampValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoSession.java` |
+| `JwtIssuerValidator` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoToken.java` |
+| `JwtTimestampValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
 | `LoginHandover` | ours | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/LoginHandover.java` |
-| `MacAlgorithm` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSession.java` |
+| `MacAlgorithm` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoToken.java` |
 | `NimbusJwtClientAuthenticationParametersConverter` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java` |
-| `NimbusJwtDecoder` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoSession.java` |
+| `NimbusJwtDecoder` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
 | `NoOpAuthorizedClientRepository` | ours | [3](#3-staying-stateless) | `itsme/NoOpAuthorizedClientRepository.java` |
 | `NullRequestCache` | Spring | [3](#3-staying-stateless) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `OAuth2AccessTokenResponseClient` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java`, `security/SecurityConfig.java`, `itsme/ItsmeConfirmationService.java` |
@@ -453,14 +429,9 @@ In the tests, Spring Security's `csrf()` request post-processor is **not** used:
 | `OidcParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
 | `OidcUser` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeLoginSuccessHandler.java`, `itsme/ItsmeConfirmationService.java` |
 | `OidcUserRequest` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |
-| `OncePerRequestFilter` | Spring (web) | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
 | `PkceParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
-| `PreAuthenticatedAuthenticationToken` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
 | `RequestAttributeSecurityContextRepository` | Spring | [3](#3-staying-stateless) | `security/SecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `RestClientAuthorizationCodeTokenResponseClient` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java` |
-| `SecurityContext` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
-| `SecurityContextHolder` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
-| `SecurityContextHolderStrategy` | Spring | [11](#11-after-the-login-the-protected-portal) | `demo/DemoSessionFilter.java` |
 | `SecurityFilterChain` | Spring | [1](#1-building-the-filter-chain) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `SessionCreationPolicy` | Spring | [3](#3-staying-stateless) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
-| `SimpleGrantedAuthority` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `demo/DemoSessionFilter.java` |
+| `SimpleGrantedAuthority` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |

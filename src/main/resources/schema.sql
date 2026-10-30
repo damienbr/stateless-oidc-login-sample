@@ -44,3 +44,17 @@ CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
     expires_at          TIMESTAMP      NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_confreq_expires ON itsme_confirmation_request (expires_at);
+
+-- Hand-over to the SPA (README: "Hand-over"), one row per itsme flow, for the login and the confirmation alike:
+-- 1. begin:    the SPA's verifier, stored under the flow's state when the flow starts;
+-- 2. complete: once the callback has checked everything, the result (JSON) and a one-time code;
+-- 3. redeem:   the SPA posts the code and the verifier; the row is deleted (single use).
+CREATE TABLE IF NOT EXISTS itsme_handover (
+    state       VARCHAR(128)   PRIMARY KEY,
+    flow        VARCHAR(16)    NOT NULL,          -- LOGIN or CONFIRMATION
+    verifier    VARCHAR(128)   NOT NULL,
+    code        VARCHAR(64)    UNIQUE,            -- set by complete
+    result      VARCHAR(8000),                    -- set by complete; no itsme claim
+    expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
+);
+CREATE INDEX IF NOT EXISTS ix_itsme_handover_expires ON itsme_handover (expires_at);
