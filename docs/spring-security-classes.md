@@ -71,7 +71,7 @@ The list of access rules, read from top to bottom; the first matching rule wins:
 
 - `requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()`: the SPA's page and its error routes are public;
 - `requestMatchers("/.well-known/jwks.json").permitAll()`: itsme must be able to download our public keys without logging in;
-- `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the verifier protect it (README: "Hand-over");
+- `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the browser code verifier protect it (README: "Hand-over");
 - `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential, is protected by `state`, and executes nothing;
 - `anyRequest().authenticated()`: everything else requires a logged-in user.
 
@@ -128,13 +128,13 @@ Constants for the standard claim names of an ID token. The sample uses `IdTokenC
 
 ## 5. Step one: sending the customer to itsme
 
-The customer clicks "Log in with itsme". The SPA puts a random verifier in a hidden field and submits a form to `/oauth2/authorization/itsme` (README: "Hand-over").
+The customer clicks "Log in with itsme". The SPA puts its browser code challenge (the hash of a secret it keeps) in a hidden field and submits a form to `/oauth2/authorization/itsme` (README: "Hand-over"). This filter, not a controller of ours, answers it.
 
 **`OAuth2AuthorizationRequestRedirectFilter`** (Spring) — *not in our code; added by `oauth2Login()`*
 
 The filter that reacts to `/oauth2/authorization/{registrationId}`. It asks a *resolver* to build the authorization request, asks a *repository* to remember it, and redirects the browser to itsme. The sample replaces both the resolver and the repository. It also uses the filter's constant `DEFAULT_AUTHORIZATION_REQUEST_BASE_URI` (`/oauth2/authorization`), so that the resolver recognises the same URL as the filter.
 
-Our resolver also begins the hand-over: when the request is a POST with a valid verifier, it calls `ItsmeHandover.begin` with the `state` Spring has just generated. It does not refuse anything: a login started otherwise simply has nothing to hand over at the end ([section 10](#10-the-end-of-the-login-success-or-failure)).
+Our resolver also begins the hand-over: when the request is a POST with a valid browser code challenge, it calls `ItsmeHandover.begin` with the `state` Spring has just generated. Not to be confused with PKCE, which `withPkce()` adds for itsme: Spring generates that `code_verifier`, and the repository stores it ([section 6](#6-remembering-the-login-in-progress)). It does not refuse anything: a login started otherwise simply has nothing to hand over at the end ([section 10](#10-the-end-of-the-login-success-or-failure)).
 
 **`OAuth2AuthorizationRequest`** (Spring) — *files: several in `itsme/`*
 
@@ -280,11 +280,11 @@ Spring's general object for "someone who has proven who they are". After an OAut
 
 **`AuthenticationSuccessHandler`** (Spring interface) and **`ItsmeLoginSuccessHandler`** (ours) — *file: `itsme/ItsmeLoginSuccessHandler.java`*
 
-Called once, when the login has succeeded; it writes the HTTP response. Spring's default redirects to the page saved in the request cache, which is a session feature. Ours builds an `ItsmeLoginResult` (customer id, method, level, time; no itsme claim) and completes the hand-over with it: `ItsmeHandover.complete`, with the `state` of the callback request, which Spring has just checked. It redirects to the SPA with the one-time code in the URL fragment, or to `/login-error?error=invalid_request` when the login was not begun with a verifier. The callback is a browser navigation: it cannot answer with JSON.
+Called once, when the login has succeeded; it writes the HTTP response. Spring's default redirects to the page saved in the request cache, which is a session feature. Ours builds an `ItsmeLoginResult` (customer id, method, level, time; no itsme claim) and completes the hand-over with it: `ItsmeHandover.complete`, with the `state` of the callback request, which Spring has just checked. It redirects to the SPA with the one-time code in the URL fragment, or to `/login-error?error=invalid_request` when the login was not begun with a browser code challenge. The callback is a browser navigation: it cannot answer with JSON.
 
 **`LoginHandover`** (ours, an interface) — *file: `itsme/LoginHandover.java`*
 
-The boundary between the itsme integration and the rest of the application (README: "Hand-over"). It is called when the SPA redeems the one-time code with its verifier (`ItsmeLoginHandoverController`, `POST /itsme/login/handover`, an AJAX call), and returns the JSON body of the answer. A real application implements it to issue its own token. In this sample, `demo/DemoLoginHandover` does the same with a demo stand-in: a signed JWT, used as a bearer token ([section 11](#11-after-the-login-the-protected-api)).
+The boundary between the itsme integration and the rest of the application (README: "Hand-over"). It is called when the SPA redeems the one-time code with its browser code verifier (`ItsmeLoginHandoverController`, `POST /itsme/login/handover`, an AJAX call), and returns the JSON body of the answer. A real application implements it to issue its own token. In this sample, `demo/DemoLoginHandover` does the same with a demo stand-in: a signed JWT, used as a bearer token ([section 11](#11-after-the-login-the-protected-api)).
 
 **`AuthenticationException`** (Spring) and **`AuthenticationFailureHandler`** (Spring interface), with **`ItsmeLoginFailureHandler`** (ours) — *file: `itsme/ItsmeLoginFailureHandler.java`*
 
@@ -330,7 +330,7 @@ A logged-in customer clicks "Confirm with itsme" in the SPA and approves one ope
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
-Three methods, the three steps of README "Hand-over". `start` (the SPA's API call) builds the authorization request, stores the confirmation in progress and begins the hand-over with the SPA's verifier. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer and completes the hand-over; it executes nothing, because the callback carries no credential. `redeem` (the SPA's API call) returns the confirmed operation, which is executed then. After Spring's checks, the service makes the checks that decide whether the approval counts: the itsme account that approved it is the one linked to the customer who started it, and the customer who redeems it is that customer.
+Three methods, the three steps of README "Hand-over". `start` (the SPA's API call) builds the authorization request, stores the confirmation in progress and begins the hand-over with the SPA's browser code challenge. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer and completes the hand-over; it executes nothing, because the callback carries no credential. `redeem` (the SPA's API call) returns the confirmed operation, which is executed then. After Spring's checks, the service makes the checks that decide whether the approval counts: the itsme account that approved it is the one linked to the customer who started it, and the customer who redeems it is that customer.
 
 **`ClientRegistration`, built by `ItsmeClientConfig.confirmationRegistration`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 

@@ -50,7 +50,7 @@ public class ItsmeLoginSuccessHandler implements AuthenticationSuccessHandler {
         String state = request.getParameter(OAuth2ParameterNames.STATE);
         Optional<String> code = handover.complete(state, ItsmeHandover.Flow.LOGIN, result);
         if (code.isEmpty()) {
-            // Not started by the SPA with a verifier: nobody can redeem this login
+            // Not started by the SPA with a browser code challenge: nobody can redeem this login
             response.sendRedirect(loginErrorUrl + "?error=invalid_request");
             return;
         }

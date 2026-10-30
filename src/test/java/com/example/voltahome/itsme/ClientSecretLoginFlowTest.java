@@ -135,7 +135,7 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
                 .andExpect(jsonPath("$.confirmationAvailable").value(false));
         assertThat(confirmation.isAvailable()).isFalse();
         assertThatThrownBy(() -> confirmation.start(new MockHttpServletRequest(), "C-1001",
-                        new ItsmeOperation("op", ItsmeFreeText.builder().text("Operation").build()), VERIFIER))
+                        new ItsmeOperation("op", ItsmeFreeText.builder().text("Operation").build()), BROWSER_CODE_CHALLENGE))
                 .isInstanceOfSatisfying(ItsmeConfirmationException.class,
                         e -> assertThat(e.code()).isEqualTo("confirmation_unavailable"));
     }

@@ -97,13 +97,14 @@ public class ItsmeConfirmationService {
     /**
      * Step 1: the customer clicks "Confirm" in the SPA, which calls its API. Returns the itsme URL the SPA then sends
      * the browser to.
-     * @param verifier the random value the SPA keeps until step 3, sent in the body of the API call
+     * @param browserCodeChallenge the S256 hash of the browser code verifier the SPA keeps until step 3
      */
-    public URI start(HttpServletRequest request, String customerId, ItsmeOperation operation, String verifier) {
+    public URI start(HttpServletRequest request, String customerId, ItsmeOperation operation,
+                     String browserCodeChallenge) {
         if (!isAvailable()) {
             throw new ItsmeConfirmationException("confirmation_unavailable");
         }
-        if (!ItsmeHandover.isVerifier(verifier)) {
+        if (!ItsmeHandover.isBrowserCodeChallenge(browserCodeChallenge)) {
             throw new ItsmeConfirmationException("invalid_request");
         }
         if (links.findSubByCustomer(customerId).isEmpty()) {
@@ -115,7 +116,7 @@ public class ItsmeConfirmationService {
         confirmations.save(new PendingConfirmation(authorization.getState(), customerId, operation,
                 authorization.getAttribute(OidcParameterNames.NONCE),
                 authorization.getAttribute(PkceParameterNames.CODE_VERIFIER)));
-        handover.begin(authorization.getState(), ItsmeHandover.Flow.CONFIRMATION, verifier);
+        handover.begin(authorization.getState(), ItsmeHandover.Flow.CONFIRMATION, browserCodeChallenge);
         return URI.create(authorization.getAuthorizationRequestUri());
     }
 
@@ -156,13 +157,13 @@ public class ItsmeConfirmationService {
     }
 
     /**
-     * Step 3: the SPA posts the code and its verifier, with the customer's token. Returns the confirmed operation, to
+     * Step 3: the SPA posts the code and its browser code verifier, with the customer's token. Returns the confirmed operation, to
      * execute now, or throws an ItsmeConfirmationException: the operation must then not be executed.
      * @param customerId the customer of the token on that API call
      */
-    public ItsmeConfirmationResult redeem(String code, String verifier, String customerId) {
+    public ItsmeConfirmationResult redeem(String code, String browserCodeVerifier, String customerId) {
         ItsmeConfirmationResult approved = handover
-                .redeem(ItsmeHandover.Flow.CONFIRMATION, code, verifier, ItsmeConfirmationResult.class)
+                .redeem(ItsmeHandover.Flow.CONFIRMATION, code, browserCodeVerifier, ItsmeConfirmationResult.class)
                 .orElseThrow(() -> failure("invalid_handover", null));   // unknown, expired, used, other browser
 
         // 3. Redeemed by the customer who started it, not with somebody else's token

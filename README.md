@@ -51,8 +51,8 @@ New to the project? Follow this order; it takes about an hour. For the reasoning
 | JWKS | A JSON set of public keys. itsme publishes its own; we publish ours at `/.well-known/jwks.json`. |
 | Discovery document | itsme's published configuration (`.well-known/openid-configuration`). Here it is only compared with our configuration, never used as a source. |
 | Service code | The itsme service our client uses, sent as the `service:<code>` scope. The login and the confirmation use two different services (`service-code`, `confirmation.service-code`). |
-| Hand-over | How the end of an itsme flow reaches the SPA: a one-time code in the URL fragment, redeemed by the SPA with its verifier. For the login, `LoginHandover` then issues the application's own token. |
-| Verifier | A random value the SPA generates and keeps before an itsme flow, and sends in the body of the start request. Only the browser that started the flow holds it, so only that browser can redeem the code. |
+| Hand-over | How the end of an itsme flow reaches the SPA: a one-time code in the URL fragment, redeemed by the SPA with its browser code verifier. For the login, `LoginHandover` then issues the application's own token. |
+| Browser code verifier, browser code challenge | The SPA's pair for the hand-over: a random secret it keeps in the browser before an itsme flow, and its S256 hash, sent at the start. Redeeming the code requires the verifier, so only the browser that started the flow can. Not PKCE's `code_verifier` / `code_challenge`, which are between the backend and itsme. |
 | Confirmation | An itsme service type: the customer approves one operation, whose text is shown in the itsme app (a WYSIWYS template, "what you see is what you sign"). |
 
 ---
@@ -310,8 +310,8 @@ sequenceDiagram
     participant I as itsme
     participant D as Database
 
-    U->>B: POST /oauth2/authorization/itsme (handover_verifier, a form from the SPA)
-    Note over B: state, nonce, code_verifier stored (5 min)<br/>hand-over begun: verifier stored under the state<br/>Request Object signed by us, encrypted for itsme
+    U->>B: POST /oauth2/authorization/itsme (browser_code_challenge, a form from the SPA)
+    Note over B: state, nonce, PKCE code_verifier stored (5 min)<br/>hand-over begun: browser code challenge under the state<br/>Request Object signed by us, encrypted for itsme
     B-->>U: 302 to itsme (request, PKCE)
     U->>I: Approves in the itsme app
     I-->>U: 302 to /login/oauth2/code/itsme with code and state
@@ -323,7 +323,7 @@ sequenceDiagram
     alt sub linked to an active customer
         B->>D: Hand-over completed: one-time code (60 s)
         B-->>U: 302 to the SPA, /#handover=code
-        U->>B: POST /itsme/login/handover (code, verifier), AJAX
+        U->>B: POST /itsme/login/handover (code, browser code verifier), AJAX
         Note over B: Hand-over redeemed: LoginHandover returns the token as JSON
     else sub unknown
         B-->>U: 302 to the error page (not_linked)
@@ -440,7 +440,7 @@ Between the redirect to itsme and the callback, `state`, `nonce` and `code_verif
 | `NullRequestCache` | `HttpSessionRequestCache` |
 | Custom success handler | `SavedRequestAwareAuthenticationSuccessHandler` |
 
-CSRF protection is disabled in this chain and in the demo API chain because no cookie is set or read anywhere: a forged cross-site request carries no credential, so there is nothing for a CSRF token to protect. The callbacks are protected by `state`, the hand-over by the one-time code and the SPA's verifier, the API by the bearer token. An application that uses cookies keeps its existing CSRF setup. The tests `noSessionIsCreatedDuringTheWholeFlow` and `noSessionIsCreatedDuringTheWholeConfirmation` verify that no session and no `JSESSIONID` cookie are created; `noCookieIsSetDuringTheWholeFlow` and `noCookieIsSetDuringTheWholeConfirmation` that no cookie at all is set.
+CSRF protection is disabled in this chain and in the demo API chain because no cookie is set or read anywhere: a forged cross-site request carries no credential, so there is nothing for a CSRF token to protect. The callbacks are protected by `state`, the hand-over by the one-time code and the SPA's browser code verifier, the API by the bearer token. An application that uses cookies keeps its existing CSRF setup. The tests `noSessionIsCreatedDuringTheWholeFlow` and `noSessionIsCreatedDuringTheWholeConfirmation` verify that no session and no `JSESSIONID` cookie are created; `noCookieIsSetDuringTheWholeFlow` and `noCookieIsSetDuringTheWholeConfirmation` that no cookie at all is set.
 
 ---
 
@@ -452,35 +452,40 @@ So **every itsme flow ends the same way**, in three steps, with one table (`itsm
 
 | Step | The SPA | The backend |
 |---|---|---|
-| 1. **begin** | Generates a random verifier (256 bits), keeps it in `localStorage`, and sends it in the **body** of the start request | Stores the verifier under the flow's `state` |
+| 1. **begin** | Generates a random browser code verifier (256 bits) and keeps it in `localStorage`; sends only its S256 hash, the browser code challenge, in a POST | Stores the browser code challenge under the flow's `state` |
 | 2. **complete** | Nothing: the browser is at itsme, then comes back | At the callback, once every check has passed: stores the result behind a one-time code, and redirects to the SPA with the code in the URL **fragment** |
-| 3. **redeem** | Reads the code, removes it from the address bar, posts the code and the verifier | Deletes the code and, if the verifier is the one stored in step 1, returns the result |
+| 3. **redeem** | Reads the code, removes it from the address bar, posts the code and the browser code verifier | Deletes the code and, if the S256 hash of the verifier is the challenge stored in step 1, returns the result |
 
 | | Login | Confirmation |
 |---|---|---|
-| 1. Start request | Form POST to `/oauth2/authorization/itsme` (field `handover_verifier`) | `POST /api/confirmation/start` with the bearer token (field `handoverVerifier`) |
+| 1. Start request | Form POST to `/oauth2/authorization/itsme` (field `browser_code_challenge`) | `POST /api/confirmation/start` with the bearer token (field `browserCodeChallenge`) |
 | 2. Callback | `/login/oauth2/code/itsme` → `/#handover=<code>` | `/itsme/confirmation/callback` → `/#confirmation=<code>` (nothing is executed here) |
 | 3. Redeem | `POST /itsme/login/handover` → the token, as JSON | `POST /api/confirmation/redeem` with the bearer token → the operation is executed now |
 
-The SPA developer's guide, with the requests and responses, is [docs/spa-handover.md](docs/spa-handover.md).
+The browser code verifier and challenge are built like PKCE's (RFC 7636, S256), but they are a separate pair: PKCE's `code_verifier` is generated by Spring and stays between the backend and itsme. Nimbus computes the hash (`CodeChallenge.compute`); it needs `json-smart`, which Spring Security leaves out, so the sample declares it.
 
-**How the redemption is bound to the browser that started the flow.** The code travels through the browser's address bar: it is the part that could leak or be forwarded. The verifier never appears in a URL: it leaves the browser only in two HTTPS request bodies to our backend, so it is not in the browser history, the server logs or a `Referer` header. Another browser does not hold it. For a confirmation there is a second binding: the customer of the bearer token must be the one who started it.
+The SPA developer's guide, with the requests, the responses, and which class handles each URL, is [docs/spa-handover.md](docs/spa-handover.md).
+
+**Why the login starts in a Spring filter, not in one of our controllers.** `oauth2Login()` already does the login correctly: `state`, `nonce` and PKCE, storing the request, the redirect, matching the callback to it, the redirect URI check, the token request and the ID token checks. Our code plugs into it at the documented points (resolver, repository, user service, handlers), as the [walkthrough](docs/walkthrough.md) explains: replace the smallest part that does not fit, never rewrite the flow. A login controller would have to call all those Spring classes by hand. The confirmation shows what that costs: it cannot use `oauth2Login()`, because it must log nobody in, so `ItsmeConfirmationService` rebuilds the exchange itself.
+
+**How the redemption is bound to the browser that started the flow.** The code travels through the browser's address bar: it is the part that could leak or be forwarded. The browser code verifier stays in the browser until step 3, and then travels only in an HTTPS request body; at the start, only its hash is sent. Whoever sees the challenge (in a log, in the database) still cannot redeem the code, and another browser does not hold the verifier. For a confirmation there is a second binding: the customer of the bearer token must be the one who started it.
 
 **Attacks and their answer** (each has a test):
 
 | Attack | Answer |
 |---|---|
-| Login CSRF: an attacker logs in with their own itsme account and sends the callback link to a victim | The victim's browser does not hold the attacker's verifier: `invalid_handover` |
-| A leaked or forwarded code | Single use, 60 seconds, and useless without the verifier |
+| Login CSRF: an attacker logs in with their own itsme account and sends the callback link to a victim | The victim's browser does not hold the attacker's browser code verifier: `invalid_handover` |
+| A leaked or forwarded code | Single use, 60 seconds, and useless without the browser code verifier |
+| A seen browser code challenge | It is a hash: redeeming needs the verifier itself |
 | Guessing a code | 256 random bits; a wrong attempt deletes the code (no second try) |
-| A login not started by the SPA (no verifier, or a GET, which would put it in the URL) | Nothing to hand over: the login ends with `invalid_request` |
+| A login not started by the SPA (no browser code challenge, or a GET such as a link) | Nothing to hand over: the login ends with `invalid_request` |
 | A login code used for a confirmation, or the reverse | The flow is checked: `invalid_handover` |
 | A confirmation approved for Alex, redeemed with Sam's token | `wrong_customer`, nothing executed |
 | Executing an operation from the callback alone | The callback executes nothing; only the redemption with the token does |
 | Choosing where the callback redirects | The SPA URLs are configuration, never a request parameter |
 | Two redemptions at the same time | Read + checked delete: only one succeeds |
 
-**Limits.** The binding is to a browser profile, not a device: a new tab of the same browser works, a private window or another browser does not. If the itsme app brings the customer back in another browser than the one that started, the flow fails (*to be confirmed in E2E*). A script injected into the SPA (XSS) could read the verifier, but it could read the token too: the SPA writes server data as text only, never as HTML, and the token is short-lived.
+**Limits.** The binding is to a browser profile, not a device: a new tab of the same browser works, a private window or another browser does not. If the itsme app brings the customer back in another browser than the one that started, the flow fails (*to be confirmed in E2E*). A script injected into the SPA (XSS) could read the browser code verifier, but it could read the token too: the SPA writes server data as text only, never as HTML, and the token is short-lived.
 
 **The login's boundary.** When the SPA redeems a login code, `LoginHandover.complete(ItsmeLoginResult)` (customer id, method, level, time — no itsme claim) returns the JSON body. Issuing the application's own token is out of scope; the token travels in that body only, never in a URL or a cookie.
 
@@ -493,7 +498,7 @@ The `demo` package shows the shape of a real application, with stand-ins:
 
 The signing key is generated at startup and kept in memory: a restart logs everyone out, and several instances would not share it. It is a demo, not a token design. The itsme login itself never makes a later request authenticated (`RequestAttributeSecurityContextRepository` keeps it for the callback request only); only the application's own token does. `DemoTokenTest` lists the attacks on the demo token.
 
-Tests (`ItsmeLoginFlowTest`, nested class `Handover`): `loginStartedWithoutVerifierCannotBeHandedOver`, `loginStartedWithTheVerifierInTheUrlCannotBeHandedOver`, `handoverVerifierIsKeptWithTheLoginAndNotSentToItsme`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `handoverReturnsTheTokenAndOurCustomerDataAsJson`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `handoverCodeCannotBeReplayed`, `unknownHandoverCodeIsRefused`, `handoverCodeExpiresAfterSixtySecondsAndIsPurged`, `failedLoginLeavesNothingToRedeem`, `noCookieIsSetDuringTheWholeFlow`. The confirmation's are in [Confirmation of an operation](#tests).
+Tests (`ItsmeLoginFlowTest`, nested class `Handover`): `loginStartedWithoutBrowserCodeChallengeCannotBeHandedOver`, `loginStartedWithALinkCannotBeHandedOver`, `browserCodeChallengeIsKeptWithTheLoginAndNotSentToItsme`, `browserCodeChallengeAloneCannotRedeemTheCode`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `handoverReturnsTheTokenAndOurCustomerDataAsJson`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `handoverCodeCannotBeReplayed`, `unknownHandoverCodeIsRefused`, `handoverCodeExpiresAfterSixtySecondsAndIsPurged`, `failedLoginLeavesNothingToRedeem`, `noCookieIsSetDuringTheWholeFlow`. The confirmation's are in [Confirmation of an operation](#tests).
 
 ---
 
@@ -518,7 +523,7 @@ Because itsme returns no proof, **the application's own checks are what make an 
 |---|---|---|
 | Is this answer for this confirmation? | `state` (single use, 5 minutes), `nonce`, PKCE | `JdbcConfirmationRequestRepository`, Spring's `OidcAuthorizationCodeAuthenticationProvider` |
 | Was the text the customer saw the one we sent? | Text fixed on the server, inside the signed and encrypted Request Object; never in the URL, never read from the callback | `DemoConfirmationController`, `ItsmeRequestObjectFactory` |
-| Is it the browser that started it? | The verifier sent at the start must come back with the one-time code (see [Hand-over](#hand-over)) | `ItsmeConfirmationService.redeem` (`invalid_handover`) |
+| Is it the browser that started it? | The browser code verifier, whose hash was sent at the start, must come back with the one-time code (see [Hand-over](#hand-over)) | `ItsmeConfirmationService.redeem` (`invalid_handover`) |
 | Is it the customer who started it? | The customer of the bearer token that redeems the approval must be the one stored at the start. The callback carries no credential, so this is checked at redemption, and the operation is executed only then | `ItsmeConfirmationService.redeem` (`wrong_customer`) |
 | **Was it approved by the right person?** | The ID token `sub` must be the itsme account linked to that customer *now*. Any other itsme account is refused and reported as a fraud signal (`WRONG_ITSME_ACCOUNT`) | `ItsmeConfirmationService.complete` (`wrong_person`) |
 | Was the itsme code used? | `acr_advanced`, as for the login | `AcrValidator` |
@@ -534,7 +539,7 @@ Without the `sub` check, any itsme account could approve the operation, for exam
 - **Text built, not escaped.** `ItsmeFreeText` emits only the tags itsme renders, checks the length and the character set, and refuses `<`, `>` and `&` in the text: the documentation does not say whether HTML entities are decoded.
 - **Template under `id_token`.** The documentation does not say whether the template goes under `id_token` or `userinfo`. The sample uses `id_token`, like the login, and never calls UserInfo (*to be confirmed in E2E*).
 - **Not a login.** The confirmation registration (`itsme-confirmation`) is not in the login's `ClientRegistrationRepository`, and its callback (`/itsme/confirmation/callback`) is outside `oauth2Login()`. A confirmation `state` cannot end a login, and a login `state` cannot end a confirmation. The confirmation authenticates nobody: its result is never put in a security context.
-- **Three steps, one execution.** The start is an API call with the customer's token. The callback checks itsme's answer and completes the hand-over, but executes nothing: it carries no credential. The redemption, an API call with the token, the one-time code and the verifier, is where the operation is executed.
+- **Three steps, one execution.** The start is an API call with the customer's token. The callback checks itsme's answer and completes the hand-over, but executes nothing: it carries no credential. The redemption, an API call with the token, the one-time code and the browser code verifier, is where the operation is executed.
 - **The result is the evidence.** `ItsmeConfirmationResult` carries the customer, the operation reference, the exact text approved, the level and the time, and no itsme claim. A real application executes the operation and keeps this record in its audit trail. The demo keeps it in memory (`DemoConfirmedOperations`) and lists it on the portal.
 
 ### Flow
@@ -548,9 +553,9 @@ sequenceDiagram
     participant I as itsme
     participant D as Database
 
-    U->>A: 1. POST /api/confirmation/start (token, verifier)
-    A->>S: start(customer, operation, verifier)
-    S->>D: state, nonce, code_verifier, customer, text (5 min)<br/>hand-over begun: verifier under the state
+    U->>A: 1. POST /api/confirmation/start (token, browser code challenge)
+    A->>S: start(customer, operation, browser code challenge)
+    S->>D: state, nonce, PKCE code_verifier, customer, text (5 min)<br/>hand-over begun: browser code challenge under the state
     A-->>U: JSON: the itsme URL (Request Object with the text)
     U->>I: Reads the text, approves in the itsme app
     I-->>U: 302 to /itsme/confirmation/callback with code and state
@@ -561,8 +566,8 @@ sequenceDiagram
     alt approved by the linked itsme account
         S->>D: Hand-over completed: one-time code (60 s), nothing executed
         S-->>U: 302 to the SPA, /#confirmation=code
-        U->>A: 3. POST /api/confirmation/redeem (token, code, verifier)
-        A->>S: redeem: same verifier, same customer
+        U->>A: 3. POST /api/confirmation/redeem (token, code, browser code verifier)
+        A->>S: redeem: verifier matches the challenge, same customer
         A-->>U: Operation executed, JSON
     else anything else
         S-->>U: 302 to /confirmation-error?error=code, nothing executed
@@ -571,7 +576,7 @@ sequenceDiagram
 
 ### Tests
 
-`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid confirmation by Alex: `linkedItsmeAccountConfirmsTheOperation`, `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `confirmationStartedByAnotherCustomerCannotBeRedeemedWithThisToken`, `ongoingCallIsRejectedAndReported`, `refusalInTheItsmeAppChangesNothing`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutToken`, `confirmationCannotBeStartedWithoutVerifier`, `loginEndpointCannotStartAConfirmation`, the hand-over (`callbackExecutesNothing`, `redemptionWithoutTokenIsRefused`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `approvalCannotBeRedeemedTwice`, `approvalExpiresAfterSixtySecondsAndIsPurged`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `callbackRedirectTargetCannotBeChosenByTheRequest`), `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, `noCookieIsSetDuringTheWholeConfirmation`, and the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`). `ItsmeFreeTextTest` covers the text. `ClientSecretLoginFlowTest.confirmationIsNotOfferedWithTheClientSecretMethod` covers the client secret method.
+`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid confirmation by Alex: `linkedItsmeAccountConfirmsTheOperation`, `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `confirmationStartedByAnotherCustomerCannotBeRedeemedWithThisToken`, `ongoingCallIsRejectedAndReported`, `refusalInTheItsmeAppChangesNothing`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutToken`, `confirmationCannotBeStartedWithoutBrowserCodeChallenge`, `loginEndpointCannotStartAConfirmation`, the hand-over (`callbackExecutesNothing`, `redemptionWithoutTokenIsRefused`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `approvalCannotBeRedeemedTwice`, `approvalExpiresAfterSixtySecondsAndIsPurged`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `callbackRedirectTargetCannotBeChosenByTheRequest`), `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, `noCookieIsSetDuringTheWholeConfirmation`, and the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`). `ItsmeFreeTextTest` covers the text. `ClientSecretLoginFlowTest.confirmationIsNotOfferedWithTheClientSecretMethod` covers the client secret method.
 
 ---
 
@@ -591,21 +596,21 @@ sequenceDiagram
 | `not_linked` | The itsme account is not linked to a customer |
 | `no_customer` | The linked customer is no longer active |
 | `fraud_suspected` | Phone call in progress during approval |
-| `invalid_request` | The login was not started by the SPA with a verifier in a POST body, so there is nothing to hand over |
+| `invalid_request` | The login was not started by the SPA with a browser code challenge in a POST, so there is nothing to hand over |
 
-Redeeming the login code (`POST /itsme/login/handover`) answers 400 with `{"error": "invalid_handover"}` when the code is unknown, expired (> 60 s), already used, or sent with another verifier: one answer for all.
+Redeeming the login code (`POST /itsme/login/handover`) answers 400 with `{"error": "invalid_handover"}` when the code is unknown, expired (> 60 s), already used, or sent with another browser code verifier: one answer for all.
 
 The confirmation callback redirects to `app.confirmation-error-url?error=<code>` (`ItsmeConfirmationCallbackController`), an SPA route with fixed messages too; the start and redemption calls answer 400 with `{"error": "<code>"}` (`DemoConfirmationController`). It passes on the codes above that come from itsme's answer and Spring's checks (`access_denied`, `invalid_grant`, `invalid_client`, `unauthorized_client`, `invalid_id_token`, `invalid_nonce`, `invalid_token_response`), uses `fraud_suspected` and `no_customer` with the same meaning, and adds:
 
 | Code | Cause |
 |---|---|
 | `confirmation_not_found` | Unknown, expired (> 5 min) or already used `state` |
-| `invalid_handover` | At redemption: the one-time code is unknown, expired (> 60 s), already used, or sent with another verifier |
+| `invalid_handover` | At redemption: the one-time code is unknown, expired (> 60 s), already used, or sent with another browser code verifier |
 | `wrong_customer` | At redemption: the bearer token is another customer's than the one who started the confirmation |
 | `wrong_person` | Approved with an itsme account that is not the one linked to the customer (also a fraud signal) |
 | `not_linked` | At the start: the customer has no linked itsme account, so nobody could confirm |
 | `confirmation_unavailable` | Client secret method: confirmation is not offered |
-| `invalid_request` | At the start: no valid verifier. At the callback: neither `code` nor `error` |
+| `invalid_request` | At the start: no valid browser code challenge. At the callback: neither `code` nor `error` |
 
 ---
 
@@ -626,7 +631,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 | 9 | **Explicit outbound proxy** on the `RestClient` and on the Nimbus `DefaultResourceRetriever`. | JVM-wide proxy settings change without notice; the route to itsme must be visible in the itsme configuration. | Code review (no automated test) |
 | 10 | **Ephemeral keys and the itsme stub refuse non-localhost endpoints** (`ItsmeKeys`, `ItsmeStubGuard`). | Throw-away keys or a fake itsme must never reach a shared environment. | `ephemeralKeysAreRefusedWithARealItsmeEndpoint`, `itsmeStubIsRefusedWithARealItsmeEndpoint` |
 | 11 | **Single-use login state and hand-over codes:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL. | Two callbacks with the same `state`, or two redemptions of the same code (double click, replay), must not both succeed. | `callbackCannotBeReplayed`, `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged`, `handoverCodeCannotBeReplayed`, `approvalCannotBeRedeemedTwice` |
-| 12 | **Hand-over without cookie, and nothing but a one-time code in a URL.** A callback redirects to the SPA with the code in the fragment; redeeming it requires the verifier the SPA sent in the body of the start request; a confirmation is executed only when redeemed with the token of the customer who started it. | A token in a URL leaks (history, logs, `Referer`); a code without verifier can be redeemed in another browser (login CSRF); a callback carries no credential, so it cannot tell who is logged in. | `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `loginStartedWithTheVerifierInTheUrlCannotBeHandedOver`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `callbackExecutesNothing`, `confirmationStartedByAnotherCustomerCannotBeRedeemedWithThisToken`, `noCookieIsSetDuringTheWholeFlow` |
+| 12 | **Hand-over without cookie, and nothing but a one-time code in a URL.** A callback redirects to the SPA with the code in the fragment; redeeming it requires the browser code verifier whose hash the SPA sent in the start request; a confirmation is executed only when redeemed with the token of the customer who started it. | A token in a URL leaks (history, logs, `Referer`); a code without verifier can be redeemed in another browser (login CSRF); a callback carries no credential, so it cannot tell who is logged in. | `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `browserCodeChallengeAloneCannotRedeemTheCode`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `callbackExecutesNothing`, `confirmationStartedByAnotherCustomerCannotBeRedeemedWithThisToken`, `noCookieIsSetDuringTheWholeFlow` |
 
 ---
 

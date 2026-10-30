@@ -151,7 +151,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
                     .andReturn();
 
             // What the SPA receives (our own customer data, from our customer table) and the token it carries
-            String body = redeemLogin(handoverCode(result), VERIFIER).andReturn().getResponse().getContentAsString();
+            String body = redeemLogin(handoverCode(result), BROWSER_CODE_VERIFIER).andReturn().getResponse().getContentAsString();
             String token = SignedJWT.parse(json.readTree(body).get("accessToken").asString()).getPayload().toString();
             assertThat(token).contains("C-1001")
                     .doesNotContain("stub-sub-alex", "Alex Martin", "alex.martin@example.com");
@@ -333,8 +333,8 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
     class Handover {
 
         @Test
-        void loginStartedWithoutVerifierCannotBeHandedOver() throws Exception {
-            // Not started by the SPA: nobody holds a verifier, so the result must not be handed over to anyone
+        void loginStartedWithoutBrowserCodeChallengeCannotBeHandedOver() throws Exception {
+            // Not started by the SPA: nobody holds a browser code verifier, so nobody may receive the result
             givenLinked("C-1001", "stub-sub-alex");
             StartedLogin started = startLogin(post("/oauth2/authorization/itsme"));
             stubTokenEndpoint(idToken(started.nonce()).sub("stub-sub-alex").build());
@@ -344,10 +344,11 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
-        void loginStartedWithTheVerifierInTheUrlCannotBeHandedOver() throws Exception {
-            // A GET would put the verifier in the URL: browser history, server logs, Referer
+        void loginStartedWithALinkCannotBeHandedOver() throws Exception {
+            // The start is a POST from the SPA: a link (a GET), wherever it comes from, starts nothing to hand over
             givenLinked("C-1001", "stub-sub-alex");
-            StartedLogin started = startLogin(get("/oauth2/authorization/itsme").param("handover_verifier", VERIFIER));
+            StartedLogin started = startLogin(get("/oauth2/authorization/itsme")
+                    .param("browser_code_challenge", BROWSER_CODE_CHALLENGE));
             stubTokenEndpoint(idToken(started.nonce()).sub("stub-sub-alex").build());
 
             callback(started.state()).andExpect(redirectedUrl("/login-error?error=invalid_request"));
@@ -355,15 +356,26 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
-        void handoverVerifierIsKeptWithTheLoginAndNotSentToItsme() throws Exception {
+        void browserCodeChallengeIsKeptWithTheLoginAndNotSentToItsme() throws Exception {
             StartedLogin started = startLogin();
 
-            assertThat(decode(started.location())).doesNotContain(VERIFIER);
+            assertThat(decode(started.location())).doesNotContain(BROWSER_CODE_CHALLENGE);
             JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
                     new ImmutableJWKSet<>(keys.publicJwkSet()));
-            assertThat(ro.toString()).doesNotContain(VERIFIER);
-            assertThat(jdbc.sql("SELECT verifier FROM itsme_handover WHERE state = :state")
-                    .param("state", started.state()).query(String.class).single()).isEqualTo(VERIFIER);
+            assertThat(ro.toString()).doesNotContain(BROWSER_CODE_CHALLENGE);
+            assertThat(jdbc.sql("SELECT browser_code_challenge FROM itsme_handover WHERE state = :state")
+                    .param("state", started.state()).query(String.class).single()).isEqualTo(BROWSER_CODE_CHALLENGE);
+        }
+
+        @Test
+        void browserCodeChallengeAloneCannotRedeemTheCode() throws Exception {
+            // Whoever saw the challenge (the start request, the database) still lacks the verifier
+            givenLinked("C-1001", "stub-sub-alex");
+            String code = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
+
+            redeemLogin(code, BROWSER_CODE_CHALLENGE)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
         }
 
         @Test
@@ -380,7 +392,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             givenLinked("C-1001", "stub-sub-alex");
             MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover()).andReturn();
 
-            redeemLogin(handoverCode(result), VERIFIER)
+            redeemLogin(handoverCode(result), BROWSER_CODE_VERIFIER)
                     .andExpect(status().isOk())
                     .andExpect(header().string("Cache-Control", "no-store"))
                     .andExpect(jsonPath("$.tokenType").value("Bearer"))
@@ -395,26 +407,26 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             givenLinked("C-1001", "stub-sub-alex");
             String code = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
 
-            redeemLogin(code, ANOTHER_VERIFIER)
+            redeemLogin(code, ANOTHER_BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
-            redeemLogin(code, VERIFIER).andExpect(status().isBadRequest());           // no second try
+            redeemLogin(code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());           // no second try
         }
 
         @Test
         void handoverCodeCannotBeReplayed() throws Exception {
             givenLinked("C-1001", "stub-sub-alex");
             String code = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
-            redeemLogin(code, VERIFIER).andExpect(status().isOk());
+            redeemLogin(code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
 
-            redeemLogin(code, VERIFIER)
+            redeemLogin(code, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
         }
 
         @Test
         void unknownHandoverCodeIsRefused() throws Exception {
-            redeemLogin("forged-code", VERIFIER)
+            redeemLogin("forged-code", BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
         }
@@ -426,7 +438,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
 
             clock.advance(ItsmeHandover.CODE_TTL.plusSeconds(1));
 
-            redeemLogin(code, VERIFIER).andExpect(status().isBadRequest());
+            redeemLogin(code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());
             handovers.purgeExpired();
             assertThat(jdbc.sql("SELECT COUNT(*) FROM itsme_handover").query(Integer.class).single()).isZero();
         }
@@ -458,7 +470,7 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         StartedLogin started = startLogin();
         stubTokenEndpoint(idToken(started.nonce()).sub("stub-sub-alex").build());
         MvcResult callback = callback(started.state()).andExpect(redirectedToLoginHandover()).andReturn();
-        MvcResult handover = redeemLogin(handoverCode(callback), VERIFIER).andExpect(status().isOk()).andReturn();
+        MvcResult handover = redeemLogin(handoverCode(callback), BROWSER_CODE_VERIFIER).andExpect(status().isOk()).andReturn();
         String token = json.readTree(handover.getResponse().getContentAsString()).get("accessToken").asString();
         MvcResult portal = portal(token).andExpect(status().isOk()).andReturn();
         return List.of(started.result(), callback, handover, portal);

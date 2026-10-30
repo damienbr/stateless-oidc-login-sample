@@ -67,7 +67,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         StartedConfirmation started = startConfirmation(alex);
 
         assertThat(started.location()).startsWith(itsme.baseUrl() + "/v2/authorization?");
-        assertThat(decode(started.location())).doesNotContain("claims=", "acr_values=", "EUR", VERIFIER);
+        assertThat(decode(started.location())).doesNotContain("claims=", "acr_values=", "EUR", BROWSER_CODE_CHALLENGE);
 
         // What itsme does: decrypt with its private key, verify our signature with our public key
         JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
@@ -78,7 +78,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         assertThat(ro.getStringClaim("state")).isEqualTo(started.state());
         assertThat(ro.getStringClaim("nonce")).isEqualTo(started.nonce());
         assertThat(ro.getStringClaim("code_challenge")).isNotBlank();
-        assertThat(ro.toString()).doesNotContain(VERIFIER);                   // the verifier stays with us
+        assertThat(ro.toString()).doesNotContain(BROWSER_CODE_CHALLENGE);     // the browser code challenge stays with us
     }
 
     @Test
@@ -111,13 +111,13 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     @Test
     void confirmationCannotBeStartedWithoutToken() throws Exception {
         mvc.perform(post(START).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("handoverVerifier", VERIFIER))))
+                        .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))))
                 .andExpect(status().isUnauthorized());
         assertThat(pendingConfirmations()).isZero();
     }
 
     @Test
-    void confirmationCannotBeStartedWithoutVerifier() throws Exception {
+    void confirmationCannotBeStartedWithoutBrowserCodeChallenge() throws Exception {
         mvc.perform(withToken(post(START), alex).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("invalid_request"));
@@ -127,7 +127,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     @Test
     void loginEndpointCannotStartAConfirmation() throws Exception {
         MvcResult result = mvc.perform(post("/oauth2/authorization/itsme-confirmation")
-                .param("handover_verifier", VERIFIER)).andReturn();
+                .param("browser_code_challenge", BROWSER_CODE_CHALLENGE)).andReturn();
         assertThat(result.getResponse().getRedirectedUrl()).isNull();
         assertThat(pendingConfirmations()).isZero();
     }
@@ -194,7 +194,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             String approvedForAlex = handoverCode(approve(alex, t -> t.sub("stub-sub-alex"))
                     .andExpect(redirectedToConfirmationHandover()).andReturn());
 
-            redeem(sam, approvedForAlex, VERIFIER)
+            redeem(sam, approvedForAlex, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("wrong_customer"));
 
@@ -280,7 +280,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             String code = handoverCode(approve(alex, t -> t).andReturn());
 
             mvc.perform(post(REDEEM).contentType(MediaType.APPLICATION_JSON).content(
-                            json.writeValueAsString(Map.of("handover", code, "verifier", VERIFIER))))
+                            json.writeValueAsString(Map.of("handover", code, "browserCodeVerifier", BROWSER_CODE_VERIFIER))))
                     .andExpect(status().isUnauthorized());
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
@@ -289,19 +289,19 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode() throws Exception {
             String code = handoverCode(approve(alex, t -> t).andReturn());
 
-            redeem(alex, code, ANOTHER_VERIFIER)
+            redeem(alex, code, ANOTHER_BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
-            redeem(alex, code, VERIFIER).andExpect(status().isBadRequest());             // no second try
+            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());             // no second try
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
 
         @Test
         void approvalCannotBeRedeemedTwice() throws Exception {
             String code = handoverCode(approve(alex, t -> t).andReturn());
-            redeem(alex, code, VERIFIER).andExpect(status().isOk());
+            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
 
-            redeem(alex, code, VERIFIER)
+            redeem(alex, code, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
             assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);
@@ -313,7 +313,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
             clock.advance(ItsmeHandover.CODE_TTL.plusSeconds(1));
 
-            redeem(alex, code, VERIFIER).andExpect(status().isBadRequest());
+            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());
             handovers.purgeExpired();
             assertThat(jdbc.sql("SELECT COUNT(*) FROM itsme_handover").query(Long.class).single()).isZero();
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
@@ -323,7 +323,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void loginCodeCannotBeRedeemedAsAConfirmation() throws Exception {
             String loginCode = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
 
-            redeem(alex, loginCode, VERIFIER)
+            redeem(alex, loginCode, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
         }
@@ -332,7 +332,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void confirmationCodeCannotBeRedeemedAsALogin() throws Exception {
             String code = handoverCode(approve(alex, t -> t).andReturn());
 
-            redeemLogin(code, VERIFIER)
+            redeemLogin(code, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
         }
@@ -428,10 +428,10 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         return request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
     }
 
-    /** Step 1: the customer clicks "Confirm with itsme"; the SPA sends its verifier with its token. */
+    /** Step 1: the customer clicks "Confirm with itsme"; the SPA sends its browser code challenge with its token. */
     private StartedConfirmation startConfirmation(String token) throws Exception {
         String body = mvc.perform(withToken(post(START), token).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("handoverVerifier", VERIFIER))))
+                        .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         String location = json.readTree(body).get("redirect").asString();
@@ -452,30 +452,30 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         return confirmationCallback(started.state());
     }
 
-    /** Step 3: the SPA redeems the approval with a verifier and a bearer token. */
+    /** Step 3: the SPA redeems the approval with a browser code verifier and a bearer token. */
     private ResultActions redeem(String token, String code, String verifier) throws Exception {
         return mvc.perform(withToken(post(REDEEM), token).contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(Map.of("handover", code, "verifier", verifier))));
+                .content(json.writeValueAsString(Map.of("handover", code, "browserCodeVerifier", verifier))));
     }
 
-    /** The three steps, with the right verifier. */
+    /** The three steps, with the right browser code verifier. */
     private ResultActions confirm(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
         return redeem(token, handoverCode(approve(token, idToken)
-                .andExpect(redirectedToConfirmationHandover()).andReturn()), VERIFIER);
+                .andExpect(redirectedToConfirmationHandover()).andReturn()), BROWSER_CODE_VERIFIER);
     }
 
     /** Portal API and the three steps, as the SPA makes them. */
     private List<MvcResult> wholeConfirmation() throws Exception {
         MvcResult portal = portal(alex).andExpect(status().isOk()).andReturn();
         MvcResult start = mvc.perform(withToken(post(START), alex).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("handoverVerifier", VERIFIER))))
+                        .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))))
                 .andExpect(status().isOk()).andReturn();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(json.readTree(
                 start.getResponse().getContentAsString()).get("redirect").asString()).build().getQueryParams();
         stubTokenEndpoint(idToken(decode(query.getFirst("nonce"))).build());
         MvcResult callback = confirmationCallback(decode(query.getFirst("state")))
                 .andExpect(redirectedToConfirmationHandover()).andReturn();
-        MvcResult redeem = redeem(alex, handoverCode(callback), VERIFIER).andExpect(status().isOk()).andReturn();
+        MvcResult redeem = redeem(alex, handoverCode(callback), BROWSER_CODE_VERIFIER).andExpect(status().isOk()).andReturn();
         return List.of(portal, start, callback, redeem);
     }
 

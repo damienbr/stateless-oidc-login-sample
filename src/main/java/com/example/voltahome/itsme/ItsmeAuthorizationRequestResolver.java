@@ -17,9 +17,9 @@ import tools.jackson.databind.ObjectMapper;
  * - Key pairs: acr_values and claims go ONLY inside the signed and encrypted Request Object.
  * - Client secret: no Request Object; acr_values and claims go in the URL, where they can be edited,
  *   so the response is what protects us (AcrValidator).
- * Hand-over step 1 (README: "Hand-over"): the SPA starts the login with a form POST carrying its verifier, which is
- * stored with the login's state. A login started otherwise (no verifier, or a GET, which would put it in the URL)
- * still goes to itsme, but has nothing to hand over: it ends with invalid_request.
+ * Hand-over step 1 (README: "Hand-over"): the SPA starts the login with a form POST carrying its browser code
+ * challenge, which is stored with the login's state. A login started otherwise (no challenge, or a GET such as a
+ * link) still goes to itsme, but has nothing to hand over: it ends with invalid_request. (The browser code challenge is not PKCE's code_challenge, generated here by Spring for itsme.)
  */
 @Component
 public class ItsmeAuthorizationRequestResolver implements OAuth2AuthorizationRequestResolver {
@@ -63,9 +63,9 @@ public class ItsmeAuthorizationRequestResolver implements OAuth2AuthorizationReq
         if (original == null) {
             return null;
         }
-        String verifier = request.getParameter(ItsmeHandover.VERIFIER_PARAMETER);
-        if ("POST".equals(request.getMethod()) && ItsmeHandover.isVerifier(verifier)) {
-            handover.begin(original.getState(), ItsmeHandover.Flow.LOGIN, verifier);
+        String browserCodeChallenge = request.getParameter(ItsmeHandover.BROWSER_CODE_CHALLENGE_PARAMETER);
+        if ("POST".equals(request.getMethod()) && ItsmeHandover.isBrowserCodeChallenge(browserCodeChallenge)) {
+            handover.begin(original.getState(), ItsmeHandover.Flow.LOGIN, browserCodeChallenge);
         }
         if (!useRequestObject) {
             return original;
