@@ -31,11 +31,11 @@ class DemoConfirmationController {
     static final String OPERATION = "advance-payment-85";
     static final String DESCRIPTION = "Set the monthly advance payment to EUR 85.00";
 
-    /** The random value the SPA keeps until step 3; in the body, never in a URL. */
-    record StartRequest(String handoverVerifier) {}
+    /** The S256 hash of the browser code verifier the SPA keeps until step 3. */
+    record StartRequest(String browserCodeChallenge) {}
 
-    /** The one-time code from the URL fragment, and the verifier. */
-    record RedeemRequest(String handover, String verifier) {}
+    /** The one-time code from the URL fragment, and the browser code verifier. */
+    record RedeemRequest(String handover, String browserCodeVerifier) {}
 
     private final ItsmeConfirmationService confirmation;
     private final DemoConfirmedOperations confirmedOperations;
@@ -56,7 +56,7 @@ class DemoConfirmationController {
         try {
             String customerId = token.getSubject();
             return ResponseEntity.ok(Map.of("redirect", confirmation.start(request, customerId,
-                    new ItsmeOperation(OPERATION, approvalText(customerId)), body.handoverVerifier()).toString()));
+                    new ItsmeOperation(OPERATION, approvalText(customerId)), body.browserCodeChallenge()).toString()));
         } catch (ItsmeConfirmationException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.code()));
         }
@@ -66,7 +66,7 @@ class DemoConfirmationController {
     @PostMapping(value = "/redeem", consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<Map<String, String>> redeem(@RequestBody RedeemRequest body, @AuthenticationPrincipal Jwt token) {
         try {
-            ItsmeConfirmationResult confirmed = confirmation.redeem(body.handover(), body.verifier(),
+            ItsmeConfirmationResult confirmed = confirmation.redeem(body.handover(), body.browserCodeVerifier(),
                     token.getSubject());
             confirmedOperations.record(confirmed);           // stands in for executing the operation
             return ResponseEntity.ok(Map.of("operation", describe(confirmed.operationReference())));

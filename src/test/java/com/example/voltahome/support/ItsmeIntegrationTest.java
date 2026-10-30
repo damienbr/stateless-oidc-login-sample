@@ -53,10 +53,14 @@ public abstract class ItsmeIntegrationTest {
     protected static final String CONFIRMATION_CALLBACK = "/itsme/confirmation/callback";
     protected static final String LOGIN_HANDOVER = "/itsme/login/handover";
 
-    /** The random value the SPA keeps during an itsme flow (README: "Hand-over"). */
-    protected static final String VERIFIER = "verifier-of-the-browser-that-started-0123456789";
-    /** A valid verifier, but not the one sent at the start: the one another browser would hold. */
-    protected static final String ANOTHER_VERIFIER = "verifier-of-another-browser-0123456789abcdefghij";
+    /**
+     * The SPA's browser code verifier and its S256 browser code challenge (README: "Hand-over"): the test vector of
+     * RFC 7636, appendix B, so that the tests do not compute the hash with the code they test.
+     */
+    protected static final String BROWSER_CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    protected static final String BROWSER_CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    /** A valid browser code verifier, but not the one of the challenge: what another browser would hold. */
+    protected static final String ANOTHER_BROWSER_CODE_VERIFIER = "verifier-of-another-browser-0123456789abcdefghij";
 
     /**
      * One WireMock server for the whole test run. A JUnit extension per test class would restart it on a new port,
@@ -111,12 +115,12 @@ public abstract class ItsmeIntegrationTest {
 
     // ------------------------------------------------------------------ helpers
 
-    /** Step 1: the user clicks "Log in with itsme": a form POST carrying the SPA's verifier. */
+    /** Step 1: the user clicks "Log in with itsme": the SPA posts its browser code challenge. */
     protected record StartedLogin(String location, String state, String nonce, String requestObject,
                                   MvcResult result) {}
 
     protected StartedLogin startLogin() throws Exception {
-        return startLogin(post("/oauth2/authorization/itsme").param("handover_verifier", VERIFIER));
+        return startLogin(post("/oauth2/authorization/itsme").param("browser_code_challenge", BROWSER_CODE_CHALLENGE));
     }
 
     /** A login started with another request than the SPA's form: the test changes that one thing. */
@@ -156,15 +160,15 @@ public abstract class ItsmeIntegrationTest {
         return location.substring(location.indexOf('=') + 1);
     }
 
-    /** The SPA redeems the login hand-over code with a verifier. */
+    /** The SPA redeems the login hand-over code with a browser code verifier. */
     protected ResultActions redeemLogin(String code, String verifier) throws Exception {
         return mvc.perform(post(LOGIN_HANDOVER).contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(Map.of("handover", code, "verifier", verifier))));
+                .content(json.writeValueAsString(Map.of("handover", code, "browserCodeVerifier", verifier))));
     }
 
     /** After a successful login: the SPA redeems the code and keeps the token it receives. */
     protected String tokenAfter(MvcResult successfulLogin) throws Exception {
-        String body = redeemLogin(handoverCode(successfulLogin), VERIFIER)
+        String body = redeemLogin(handoverCode(successfulLogin), BROWSER_CODE_VERIFIER)
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         return json.readTree(body).get("accessToken").asString();

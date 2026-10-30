@@ -46,13 +46,14 @@ CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
 CREATE INDEX IF NOT EXISTS ix_itsme_confreq_expires ON itsme_confirmation_request (expires_at);
 
 -- Hand-over to the SPA (README: "Hand-over"), one row per itsme flow, for the login and the confirmation alike:
--- 1. begin:    the SPA's verifier, stored under the flow's state when the flow starts;
+-- 1. begin:    the SPA's browser code challenge (S256 of its browser code verifier), stored under the flow's state;
 -- 2. complete: once the callback has checked everything, the result (JSON) and a one-time code;
--- 3. redeem:   the SPA posts the code and the verifier; the row is deleted (single use).
+-- 3. redeem:   the SPA posts the code and its browser code verifier; the row is deleted (single use).
+-- Not to be confused with PKCE's code_challenge and code_verifier, between the backend and itsme.
 CREATE TABLE IF NOT EXISTS itsme_handover (
     state       VARCHAR(128)   PRIMARY KEY,
     flow        VARCHAR(16)    NOT NULL,          -- LOGIN or CONFIRMATION
-    verifier    VARCHAR(128)   NOT NULL,
+    browser_code_challenge VARCHAR(64) NOT NULL,
     code        VARCHAR(64)    UNIQUE,            -- set by complete
     result      VARCHAR(8000),                    -- set by complete; no itsme claim
     expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
