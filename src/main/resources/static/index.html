@@ -1,0 +1,237 @@
+<!doctype html>
+<!--
+  DEMO ONLY. Stands in for the application's single page application (README: "Hand-over").
+  No cookie: the token returned by the hand-over is kept in sessionStorage and sent as a bearer token.
+  Before each itsme flow, a random verifier is kept in localStorage and sent in the body of the request that starts
+  the flow (never in a URL); redeeming the one-time code from the URL fragment requires the same verifier.
+  Server data is always written with textContent, never as HTML.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoltaHome</title>
+<style>
+  body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  .button { display: inline-block; padding: .7rem 1.2rem; background: #2e7d32; color: #fff; border: 0;
+            border-radius: 6px; text-decoration: none; cursor: pointer; font-size: 1rem; }
+  .small { padding: .4rem .8rem; font-size: .9rem; }
+  .link { background: none; border: 0; color: #1565c0; cursor: pointer; padding: 0; font-size: 1rem; }
+  .error { color: #a00; } .notice { color: #2e7d32; }
+  th { text-align: left; padding-right: 1rem; } td { padding: .25rem 1rem .25rem 0; vertical-align: top; }
+</style>
+</head>
+<body>
+<h1>VoltaHome</h1>
+<p id="message" hidden></p>
+
+<section id="home" hidden>
+  <p>Customer portal of a fictitious energy supplier.</p>
+  <!-- A form POST, so that the verifier travels in the body, not in the URL -->
+  <form method="post" action="/oauth2/authorization/itsme" id="login">
+    <input type="hidden" name="handover_verifier" id="login-verifier">
+    <p><button class="button" type="submit">Log in with itsme</button></p>
+  </form>
+  <p><small>For customers whose itsme account is already linked to their VoltaHome account.</small></p>
+</section>
+
+<section id="portal" hidden>
+  <p id="welcome"></p>
+  <table>
+    <tr><th>Customer number</th><td id="customer-id"></td></tr>
+    <tr><th>Logged in with</th><td>itsme</td></tr>
+    <tr><th>Authentication level</th><td id="level"></td></tr>
+    <tr><th>Logged in at</th><td id="logged-in-at"></td></tr>
+    <tr><th>Token expires at</th><td id="expires-at"></td></tr>
+  </table>
+  <p><small>This data comes from a protected API, called with the demo token (<code>demo/DemoToken</code>), which
+    stands in for the application's own token.</small></p>
+  <h2>Orders and offers</h2>
+  <p id="unavailable" hidden><small>Confirming an operation with itsme needs the key pairs method
+    (<code>itsme.client-authentication=private-key-jwt</code>).</small></p>
+  <table id="operations"></table>
+  <table id="confirmed" hidden><tr><th>Confirmed operation</th><th>Confirmed at</th></tr></table>
+  <p><button class="link" id="logout" type="button">Log out</button></p>
+</section>
+
+<script>
+'use strict';
+
+const TOKEN = 'voltahome.token';                                 // sessionStorage: this tab only
+const LOGIN_VERIFIER = 'voltahome.login-verifier';               // localStorage: itsme may come back in a new tab
+const CONFIRMATION_VERIFIER = 'voltahome.confirmation-verifier';
+
+// README: "Error codes". Fixed messages only; the raw "error" parameter is never displayed.
+const LOGIN_MESSAGES = {
+  access_denied: 'Login cancelled.',
+  authorization_request_not_found: 'Your session has expired. Please try again.',
+  invalid_grant: 'Your session has expired. Please try again.',
+  invalid_request: 'The login could not be started. Please try again.',
+  invalid_handover: 'The login could not be completed in this browser. Please try again.',
+  not_linked: 'This itsme account is not linked to a VoltaHome account.',
+  no_customer: 'This itsme account is linked to a VoltaHome account that is no longer active.',
+  fraud_suspected: 'For your security, this login has been blocked. Never share your codes over the phone.'
+};
+const CONFIRMATION_MESSAGES = {
+  access_denied: 'The operation was refused in itsme. Nothing was changed.',
+  confirmation_not_found: 'This confirmation has expired or was already used. Nothing was changed.',
+  invalid_handover: 'This confirmation could not be completed in this browser. Nothing was changed.',
+  wrong_customer: 'This confirmation was not started by you. Nothing was changed.',
+  wrong_person: 'The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.',
+  fraud_suspected: 'For your security, this operation has been blocked. Never share your codes over the phone.',
+  not_linked: 'No itsme account is linked to your VoltaHome account.',
+  no_customer: 'Your VoltaHome account is no longer active.',
+  confirmation_unavailable: 'Confirmation with itsme is not available in this configuration.',
+  operation_not_found: 'This operation does not exist or can no longer be confirmed. Nothing was changed.',
+  unknown_operation: 'This operation cannot be confirmed. Nothing was changed.'
+};
+
+const $ = id => document.getElementById(id);
+
+function show(message, kind) {
+  $('message').textContent = message;
+  $('message').className = kind;
+  $('message').hidden = false;
+}
+
+function storage(store, key, value) {
+  try {
+    if (value === undefined) { return store.getItem(key); }
+    if (value === null) { store.removeItem(key); } else { store.setItem(key, value); }
+  } catch (e) {
+    return null;                                                   // storage blocked: the flow fails cleanly
+  }
+  return null;
+}
+
+/** Reads and removes a value: a verifier is used once. */
+function take(store, key) {
+  const value = storage(store, key);
+  storage(store, key, null);
+  return value;
+}
+
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** A new random verifier (256 bits), kept until the end of the flow. */
+function newVerifier(key) {
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  storage(localStorage, key, verifier);
+  return verifier;
+}
+
+async function api(method, path, body) {
+  const headers = { 'Accept': 'application/json' };
+  const token = storage(sessionStorage, TOKEN);
+  if (token) { headers['Authorization'] = 'Bearer ' + token; }
+  if (body !== undefined) { headers['Content-Type'] = 'application/json'; }
+  const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await response.json().catch(() => ({}));
+  return { status: response.status, data };
+}
+
+function login() {
+  $('login-verifier').value = newVerifier(LOGIN_VERIFIER);       // then the form is submitted to the backend
+}
+
+async function redeemLogin(code) {
+  const { status, data } = await api('POST', '/itsme/login/handover',
+      { handover: code, verifier: take(localStorage, LOGIN_VERIFIER) });
+  if (status !== 200) {
+    show(LOGIN_MESSAGES[data.error] || 'An error occurred. Please try again.', 'error');
+    return false;
+  }
+  storage(sessionStorage, TOKEN, data.accessToken);
+  return true;
+}
+
+async function startConfirmation(action) {
+  const { status, data } = await api('POST', action, { handoverVerifier: newVerifier(CONFIRMATION_VERIFIER) });
+  if (status === 200) {
+    location.assign(data.redirect);                                // to itsme; the token stays in sessionStorage
+  } else {
+    show(CONFIRMATION_MESSAGES[data.error] || 'The operation could not be confirmed. Nothing was changed.', 'error');
+  }
+}
+
+async function redeemConfirmation(code) {
+  const { status, data } = await api('POST', '/api/confirmation/complete',
+      { handover: code, verifier: take(localStorage, CONFIRMATION_VERIFIER) });
+  if (status === 200) {
+    show('The operation was confirmed.', 'notice');
+  } else if (status === 401) {
+    show('Your session has expired. Nothing was changed.', 'error');
+  } else {
+    show(CONFIRMATION_MESSAGES[data.error] || 'The operation could not be confirmed. Nothing was changed.', 'error');
+  }
+}
+
+function row(table, cells) {
+  const tr = table.insertRow();
+  for (const cell of cells) {
+    const td = tr.insertCell();
+    if (cell instanceof Node) { td.appendChild(cell); } else { td.textContent = cell; }
+  }
+}
+
+async function showPortal() {
+  const { status, data } = await api('GET', '/api/portal');
+  if (status !== 200) {                                            // no token, expired or forged
+    storage(sessionStorage, TOKEN, null);
+    $('home').hidden = false;
+    return;
+  }
+  $('welcome').textContent = 'Welcome, ' + data.displayName + '.';
+  $('customer-id').textContent = data.customerId;
+  $('level').textContent = data.authenticationLevel;
+  $('logged-in-at').textContent = data.loggedInAt;
+  $('expires-at').textContent = data.expiresAt;
+  $('unavailable').hidden = data.confirmationAvailable;
+  if (data.confirmationAvailable) {
+    for (const operation of data.operations) {
+      const button = document.createElement('button');
+      button.className = 'button small';
+      button.type = 'button';
+      button.textContent = operation.label;
+      button.addEventListener('click', () => startConfirmation(operation.action));
+      row($('operations'), [operation.description, button]);
+    }
+  }
+  for (const confirmed of data.confirmed) {
+    row($('confirmed'), [confirmed.operationType + ' ' + confirmed.operationReference, confirmed.confirmedAt]);
+  }
+  $('confirmed').hidden = data.confirmed.length === 0;
+  $('portal').hidden = false;
+}
+
+async function start() {
+  $('login').addEventListener('submit', login);
+  $('logout').addEventListener('click', () => { storage(sessionStorage, TOKEN, null); location.assign('/'); });
+
+  // The one-time code arrives in the fragment: read it, then remove it from the address bar and the history
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  const query = new URLSearchParams(location.search);
+  if (location.hash) { history.replaceState(null, '', location.pathname + location.search); }
+
+  if (fragment.has('handover')) {
+    if (!(await redeemLogin(fragment.get('handover')))) { $('home').hidden = false; return; }
+  } else if (fragment.has('confirmation')) {
+    await redeemConfirmation(fragment.get('confirmation'));
+  } else if (location.pathname === '/login-error') {
+    show(LOGIN_MESSAGES[query.get('error')] || 'An error occurred. Please try again.', 'error');
+    $('home').hidden = false;
+    return;
+  } else if (location.pathname === '/confirmation-error') {
+    show(CONFIRMATION_MESSAGES[query.get('error')] || 'The operation could not be confirmed. Nothing was changed.',
+        'error');
+  }
+  if (storage(sessionStorage, TOKEN)) { await showPortal(); } else { $('home').hidden = false; }
+}
+
+start();
+</script>
+</body>
+</html>

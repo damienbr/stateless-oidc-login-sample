@@ -32,11 +32,13 @@ public class ItsmeLoginFailureHandler implements AuthenticationFailureHandler {
     @Override
     public void onAuthenticationFailure(HttpServletRequest request, HttpServletResponse response,
                                         AuthenticationException exception) throws IOException {
-        String code = exception instanceof OAuth2AuthenticationException oauth2
+        // The start of the login (ItsmeAuthorizationRequestResolver) reports its errors wrapped by Spring
+        Throwable error = exception instanceof OAuth2AuthenticationException ? exception : exception.getCause();
+        String code = error instanceof OAuth2AuthenticationException oauth2
                 ? oauth2.getError().getErrorCode()
                 : "login_failed";
         log.info("itsme login failed: {} ({})", code,
-                exception instanceof OAuth2AuthenticationException oauth2 ? oauth2.getError().getDescription() : "-");
+                error instanceof OAuth2AuthenticationException oauth2 ? oauth2.getError().getDescription() : "-");
         response.sendRedirect(loginErrorUrl + "?error=" + URLEncoder.encode(code, StandardCharsets.UTF_8));
     }
 }

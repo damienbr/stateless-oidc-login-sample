@@ -9,9 +9,9 @@ import com.example.voltahome.itsme.ItsmeConfirmationResult;
 import org.springframework.stereotype.Component;
 
 /**
- * DEMO ONLY. Stands in for the application's business operation and its audit trail: a real application executes the
- * operation and keeps the ItsmeConfirmationResult (who, what, when, at which level) as evidence of the approval.
- * Kept in memory: lost on restart, not shared between instances.
+ * DEMO ONLY. Stands in for the application's audit trail: once the operation is executed (DemoOrderConfirmation,
+ * DemoOfferAcceptance), a real application keeps the ItsmeConfirmationResult (who, what, when, at which level) as
+ * evidence of the approval. Kept in memory: lost on restart, not shared between instances.
  */
 @Component
 public class DemoConfirmedOperations {

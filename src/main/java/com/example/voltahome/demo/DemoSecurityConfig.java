@@ -4,39 +4,32 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.context.RequestAttributeSecurityContextRepository;
-import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 
 /**
- * DEMO ONLY. Filter chain of the protected portal: a request is authenticated by the demo session cookie,
- * never by the itsme login itself. Evaluated before the main filter chain (security/SecurityConfig).
+ * DEMO ONLY. Filter chain of the demo API (/api/**), used by the SPA: a request is authenticated by the demo bearer
+ * token (DemoToken), never by the itsme login itself. Evaluated before the main filter chain (security/SecurityConfig).
  */
 @Configuration
 class DemoSecurityConfig {
 
     @Bean
     @Order(2)
-    SecurityFilterChain portalFilterChain(HttpSecurity http, DemoSession session) throws Exception {
-        // CSRF token in a cookie, not in an HttpSession (stateless). Limited to the portal, like the session cookie.
-        CookieCsrfTokenRepository csrfTokens = new CookieCsrfTokenRepository();
-        csrfTokens.setCookiePath("/portal");
-        csrfTokens.setCookieCustomizer(cookie -> cookie.secure(true).sameSite("Lax"));
-        http.securityMatcher("/portal", "/portal/**")
+    SecurityFilterChain apiFilterChain(HttpSecurity http, DemoToken token) throws Exception {
+        http.securityMatcher("/api/**")
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .securityContext(sc -> sc.securityContextRepository(new RequestAttributeSecurityContextRepository()))
                 .requestCache(rc -> rc.requestCache(new NullRequestCache()))
-                // The portal has a form (the "Confirm with itsme" button, a POST): CSRF protection is on.
-                // The confirmation callback is a GET, protected by "state" like the login callback.
-                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens))
-                .addFilterBefore(new DemoSessionFilter(session), AnonymousAuthenticationFilter.class)
+                // The token travels in the Authorization header, set by the SPA's code, and no cookie exists: a forged
+                // cross-site request carries no credential, so no CSRF token is needed.
+                .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
-                // Not logged in, or session expired: back to the home page and its login button
-                .exceptionHandling(e -> e.authenticationEntryPoint(
-                        (request, response, exception) -> response.sendRedirect("/")));
+                // Missing, forged or expired token: 401 with WWW-Authenticate: Bearer
+                .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(token.decoder())));
         return http.build();
     }
 }

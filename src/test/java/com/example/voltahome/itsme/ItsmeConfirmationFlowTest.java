@@ -3,10 +3,9 @@ package com.example.voltahome.itsme;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -14,51 +13,55 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import com.example.voltahome.demo.DemoSession;
 import com.example.voltahome.fraud.FraudSignal;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jwt.JWTClaimsSet;
-import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
 
 /**
- * README: "Confirmation of an operation". Alex (C-1001, itsme account stub-sub-alex) is logged in to the portal and
- * confirms one operation. Each test changes one thing in that valid confirmation and states the expected answer.
+ * README: "Confirmation of an operation", "Several operations, one callback", "Hand-over". Alex (C-1001, itsme
+ * account stub-sub-alex) is logged in to the SPA with a demo token and confirms the open order O-2001: the SPA starts
+ * the confirmation, itsme calls back, and the SPA redeems the approval. Each test changes one thing in that valid
+ * confirmation and states the expected answer. Sam (C-1002) has an order O-2002 and an offer F-3002; Alex also has an
+ * offer F-3001.
  */
 class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
-    private static final String CONFIRMED = "advance-payment-85";
+    private static final String CONFIRM_ORDER = "/api/orders/O-2001/confirm";
+    private static final String ACCEPT_OFFER = "/api/offers/F-3001/accept";
+    private static final String COMPLETE = "/api/confirmation/complete";
 
-    private Cookie alex;
+    private String alex;
 
     @BeforeEach
     void alexIsLoggedIn() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        alex = sessionOf("stub-sub-alex");
+        alex = tokenOf("stub-sub-alex");
     }
 
     // ------------------------------------------------------------------ what we send to itsme
 
     @Test
-    void portalOffersTheConfirmButtonAsACsrfProtectedForm() throws Exception {
-        mvc.perform(get("/portal").cookie(alex))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString("action=\"/portal/confirmation\"")))
-                .andExpect(content().string(containsString("name=\"_csrf\"")));
+    void portalListsTheOperationsOfTheCustomerOnly() throws Exception {
+        String body = portal(alex).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+
+        assertThat(body).contains("\"action\":\"" + CONFIRM_ORDER + "\"", "\"action\":\"" + ACCEPT_OFFER + "\"")
+                .doesNotContain("O-2002", "F-3002");
     }
 
     @Test
@@ -66,7 +69,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         StartedConfirmation started = startConfirmation(alex);
 
         assertThat(started.location()).startsWith(itsme.baseUrl() + "/v2/authorization?");
-        assertThat(decode(started.location())).doesNotContain("claims=", "acr_values=", "EUR");
+        assertThat(decode(started.location())).doesNotContain("claims=", "acr_values=", "EUR", VERIFIER);
 
         // What itsme does: decrypt with its private key, verify our signature with our public key
         JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
@@ -77,6 +80,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         assertThat(ro.getStringClaim("state")).isEqualTo(started.state());
         assertThat(ro.getStringClaim("nonce")).isEqualTo(started.nonce());
         assertThat(ro.getStringClaim("code_challenge")).isNotBlank();
+        assertThat(ro.toString()).doesNotContain(VERIFIER);                   // the hand-over verifier stays with us
     }
 
     @Test
@@ -91,13 +95,13 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         assertThat(idTokenClaims.get(ItsmeClaims.APPROVAL_TEMPLATE_NAME))
                 .isEqualTo(Map.of("essential", true, "value", "free_text"));
         assertThat(idTokenClaims.get(ItsmeClaims.APPROVAL_TEXT)).isEqualTo(Map.of("essential", true, "value",
-                "<b>VoltaHome</b><br>Customer number: C-1001<br>New monthly advance payment: <b>EUR 85.00</b><br>"
-                        + "From the next advance invoice."));
+                "<b>VoltaHome</b><br>Customer number: C-1001<br>Confirm order O-2001: Smart thermostat<br>"
+                        + "Total: <b>EUR 149.00</b>"));
     }
 
     @Test
     void tokenRequestUsesTheConfirmationRedirectUriASignedClientAssertionAndPkce() throws Exception {
-        confirm(alex, t -> t).andExpect(redirectedUrl("/portal"));
+        confirm(alex, t -> t).andExpect(status().isOk());
 
         List<LoggedRequest> requests = itsme.findAll(postRequestedFor(urlEqualTo("/v2/token")));
         Map<String, String> form = formParams(requests.get(requests.size() - 1).getBodyAsString());
@@ -107,32 +111,26 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     }
 
     @Test
-    void confirmationCannotBeStartedWithoutCsrfToken() throws Exception {
-        mvc.perform(post("/portal/confirmation").cookie(alex)).andExpect(status().isForbidden());
+    void confirmationCannotBeStartedWithoutToken() throws Exception {
+        mvc.perform(post(CONFIRM_ORDER).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"handoverVerifier\":\"" + VERIFIER + "\"}"))
+                .andExpect(status().isUnauthorized());
         assertThat(pendingConfirmations()).isZero();
     }
 
     @Test
-    void confirmationCannotBeStartedWithForgedCsrfToken() throws Exception {
-        mvc.perform(post("/portal/confirmation").cookie(alex).cookie(new Cookie("XSRF-TOKEN", "forged"))
-                        .param("_csrf", "forged"))
-                .andExpect(status().isForbidden());
-        assertThat(pendingConfirmations()).isZero();
-    }
-
-    @Test
-    void confirmationCannotBeStartedWithoutSession() throws Exception {
-        CsrfPair csrf = csrfFromPortal(alex);
-
-        mvc.perform(post("/portal/confirmation").cookie(csrf.cookie()).param("_csrf", csrf.token()))   // no session
-                .andExpect(redirectedUrl("/"));
+    void confirmationCannotBeStartedWithoutHandoverVerifier() throws Exception {
+        mvc.perform(withToken(post(CONFIRM_ORDER), alex).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_request"));
         assertThat(pendingConfirmations()).isZero();
     }
 
     @Test
     void loginEndpointCannotStartAConfirmation() throws Exception {
-        MvcResult result = mvc.perform(get("/oauth2/authorization/itsme-confirmation")).andReturn();
-        assertThat(result.getResponse().getRedirectedUrl()).isNull();
+        MvcResult result = mvc.perform(post("/oauth2/authorization/itsme-confirmation")
+                .param("handover_verifier", VERIFIER)).andReturn();
+        assertThat(result.getResponse().getRedirectedUrl()).doesNotStartWith(itsme.baseUrl());
         assertThat(pendingConfirmations()).isZero();
     }
 
@@ -142,26 +140,33 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     class RightPerson {
 
         @Test
-        void linkedItsmeAccountConfirmsTheOperation() throws Exception {
-            confirm(alex, t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal"));
+        void linkedItsmeAccountConfirmsTheOrder() throws Exception {
+            confirm(alex, t -> t.sub("stub-sub-alex"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.operationType").value("order"))
+                    .andExpect(jsonPath("$.operationReference").value("O-2001"));
 
+            assertThat(orderStatus("O-2001")).isEqualTo("CONFIRMED");
             assertThat(confirmedOperations.forCustomer("C-1001"))
                     .singleElement()
                     .satisfies(r -> {
-                        assertThat(r.operationReference()).isEqualTo(CONFIRMED);
-                        assertThat(r.approvalText()).contains("C-1001", "EUR 85.00");
+                        assertThat(r.operationType()).isEqualTo("order");
+                        assertThat(r.operationReference()).isEqualTo("O-2001");
+                        assertThat(r.approvalText()).contains("C-1001", "O-2001", "EUR 149.00");
                         assertThat(r.authenticationLevel()).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
                     });
-            mvc.perform(get("/portal").cookie(alex))
-                    .andExpect(content().string(containsString("Set the monthly advance payment to EUR 85.00")));
+            String portal = portal(alex).andReturn().getResponse().getContentAsString();
+            assertThat(portal).contains("\"operationReference\":\"O-2001\"")
+                    .doesNotContain("\"action\":\"" + CONFIRM_ORDER + "\"");
         }
 
         @Test
         void unknownItsmeAccountCannotConfirmAndIsReported() throws Exception {
-            confirm(alex, t -> t.sub("stub-sub-stranger"))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=wrong_person"));
+            approve(alex, t -> t.sub("stub-sub-stranger"))
+                    .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
 
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(approvalsWaiting()).isZero();
             assertThat(fraud.raisedSignals()).singleElement().satisfies(s -> {
                 assertThat(s.signal()).isEqualTo(FraudSignal.WRONG_ITSME_ACCOUNT);
                 assertThat(s.customerId()).isEqualTo("C-1001");
@@ -173,11 +178,11 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void itsmeAccountOfAnotherCustomerCannotConfirm() throws Exception {
             givenLinked("C-1002", "stub-sub-sam");
 
-            confirm(alex, t -> t.sub("stub-sub-sam"))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=wrong_person"));
+            approve(alex, t -> t.sub("stub-sub-sam"))
+                    .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
 
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-            assertThat(confirmedOperations.forCustomer("C-1002")).isEmpty();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(approvalsWaiting()).isZero();
         }
 
         @Test
@@ -186,42 +191,32 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             jdbc.sql("UPDATE itsme_link SET itsme_sub = 'stub-sub-alex-new' WHERE customer_id = 'C-1001'").update();
             stubTokenEndpoint(idToken(started.nonce()).sub("stub-sub-alex").build());
 
-            confirmationCallback(alex, started.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=wrong_person"));
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
         }
 
         @Test
-        void confirmationStartedByAnotherCustomerCannotBeEndedInThisSession() throws Exception {
+        void confirmationStartedByAnotherCustomerCannotBeCompletedWithThisToken() throws Exception {
             givenLinked("C-1002", "stub-sub-sam");
-            Cookie sam = sessionOf("stub-sub-sam");
-            StartedConfirmation startedByAlex = startConfirmation(alex);
-            stubTokenEndpoint(idToken(startedByAlex.nonce()).sub("stub-sub-sam").build());
+            String sam = tokenOf("stub-sub-sam");
+            String approvedForAlex = handoverCode(approve(alex, t -> t.sub("stub-sub-alex"))
+                    .andExpect(redirectedToConfirmationHandover()).andReturn());
 
-            confirmationCallback(sam, startedByAlex.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=wrong_customer"));
+            complete(sam, approvedForAlex, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("wrong_customer"));
 
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
             assertThat(confirmedOperations.forCustomer("C-1002")).isEmpty();
         }
 
         @Test
-        void callbackWithoutSessionIsRefused() throws Exception {
-            StartedConfirmation started = startConfirmation(alex);
-            stubTokenEndpoint(idToken(started.nonce()).build());
-
-            mvc.perform(get(CONFIRMATION_CALLBACK).param("code", "stub-authorization-code")
-                            .param("state", started.state()))
-                    .andExpect(redirectedUrl("/"));
-
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-        }
-
-        @Test
         void ongoingCallIsRejectedAndReported() throws Exception {
-            confirm(alex, t -> t.ongoingCall(true))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=fraud_suspected"));
+            approve(alex, t -> t.ongoingCall(true))
+                    .andExpect(redirectedUrl("/confirmation-error?error=fraud_suspected"));
 
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
+            assertThat(approvalsWaiting()).isZero();
             assertThat(fraud.raisedSignals()).singleElement()
                     .satisfies(s -> assertThat(s.signal()).isEqualTo(FraudSignal.ONGOING_CALL));
         }
@@ -230,11 +225,11 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void refusalInTheItsmeAppChangesNothing() throws Exception {
             StartedConfirmation started = startConfirmation(alex);
 
-            mvc.perform(get(CONFIRMATION_CALLBACK).cookie(alex)
-                            .param("error", "access_denied").param("state", started.state()))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=access_denied"));
+            mvc.perform(get(CONFIRMATION_CALLBACK).param("error", "access_denied").param("state", started.state()))
+                    .andExpect(redirectedUrl("/confirmation-error?error=access_denied"));
 
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(approvalsWaiting()).isZero();
         }
 
         @Test
@@ -243,8 +238,8 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             jdbc.sql("UPDATE customer SET active = FALSE WHERE customer_id = 'C-1001'").update();
             try {
                 stubTokenEndpoint(idToken(started.nonce()).build());
-                confirmationCallback(alex, started.state())
-                        .andExpect(redirectedUrl("/portal/confirmation/error?error=no_customer"));
+                confirmationCallback(started.state())
+                        .andExpect(redirectedUrl("/confirmation-error?error=no_customer"));
             } finally {
                 jdbc.sql("UPDATE customer SET active = TRUE WHERE customer_id = 'C-1001'").update();
             }
@@ -258,14 +253,14 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void basicAcrIsRejected() throws Exception {
-            confirm(alex, t -> t.acr(ItsmeWireMock.ACR_BASIC))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=invalid_id_token"));
+            approve(alex, t -> t.acr(ItsmeWireMock.ACR_BASIC))
+                    .andExpect(redirectedUrl("/confirmation-error?error=invalid_id_token"));
         }
 
         @Test
         void idTokenIssuedForAnotherRequestIsRejected() throws Exception {
-            confirm(alex, t -> t.claim("nonce", "nonce-of-another-request"))
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=invalid_nonce"));
+            approve(alex, t -> t.claim("nonce", "nonce-of-another-request"))
+                    .andExpect(redirectedUrl("/confirmation-error?error=invalid_nonce"));
         }
 
         @Test
@@ -273,8 +268,176 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex);
             stubTokenEndpoint(idToken(started.nonce()).buildEncryptedButUnsigned());
 
-            confirmationCallback(alex, started.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=invalid_id_token"));
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=invalid_id_token"));
+        }
+    }
+
+    // ------------------------------------------------------------------ hand-over to the SPA (README "Hand-over")
+
+    @Nested
+    class Handover {
+
+        @Test
+        void callbackExecutesNothing() throws Exception {
+            approve(alex, t -> t).andExpect(redirectedToConfirmationHandover());
+
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
+        }
+
+        @Test
+        void completionWithoutTokenIsRefused() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+
+            mvc.perform(post(COMPLETE).contentType(MediaType.APPLICATION_JSON).content(
+                            json.writeValueAsString(Map.of("handover", code, "verifier", VERIFIER))))
+                    .andExpect(status().isUnauthorized());
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void completionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+
+            complete(alex, code, ANOTHER_VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+            complete(alex, code, VERIFIER).andExpect(status().isBadRequest());           // no second try
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void approvalCannotBeRedeemedTwice() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+            complete(alex, code, VERIFIER).andExpect(status().isOk());
+
+            complete(alex, code, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+            assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);
+        }
+
+        @Test
+        void approvalExpiresAfterSixtySecondsAndIsPurged() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+
+            clock.advance(ItsmeHandover.TTL.plusSeconds(1));
+
+            complete(alex, code, VERIFIER).andExpect(status().isBadRequest());
+            confirmationRequests.purgeExpired();
+            assertThat(approvalsWaiting()).isZero();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void loginHandoverCodeCannotCompleteAConfirmation() throws Exception {
+            String loginCode = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
+
+            complete(alex, loginCode, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+        }
+
+        @Test
+        void confirmationHandoverCodeCannotEndALogin() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+
+            redeemLogin(code, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+        }
+    }
+
+    // ------------------------------------------------------------------ several operations, one callback
+
+    @Nested
+    class SeveralOperations {
+
+        @Test
+        void offerIsAcceptedThroughTheSameCallback() throws Exception {
+            StartedConfirmation started = startConfirmation(alex, ACCEPT_OFFER);
+            JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
+                    new ImmutableJWKSet<>(keys.publicJwkSet()));
+            assertThat(ro.getStringClaim("redirect_uri")).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
+            stubTokenEndpoint(idToken(started.nonce()).build());
+            String code = handoverCode(confirmationCallback(started.state())
+                    .andExpect(redirectedToConfirmationHandover()).andReturn());
+
+            complete(alex, code, VERIFIER).andExpect(status().isOk());
+
+            assertThat(offerStatus("F-3001")).isEqualTo("ACCEPTED");
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(confirmedOperations.forCustomer("C-1001")).singleElement().satisfies(r -> {
+                assertThat(r.operationType()).isEqualTo("offer");
+                assertThat(r.operationReference()).isEqualTo("F-3001");
+                assertThat(r.approvalText()).contains("Accept offer F-3001", "EUR 0.2850 per kWh");
+            });
+        }
+
+        @Test
+        void orderOfAnotherCustomerCannotBeSentForConfirmation() throws Exception {
+            start(alex, "/api/orders/O-2002/confirm")
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("operation_not_found"));
+
+            assertThat(pendingConfirmations()).isZero();
+            assertThat(orderStatus("O-2002")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void offerOfAnotherCustomerCannotBeSentForConfirmation() throws Exception {
+            start(alex, "/api/offers/F-3002/accept")
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("operation_not_found"));
+
+            assertThat(pendingConfirmations()).isZero();
+            assertThat(offerStatus("F-3002")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void operationInTheCallbackUrlIsIgnored() throws Exception {
+            StartedConfirmation started = startConfirmation(alex);
+            stubTokenEndpoint(idToken(started.nonce()).build());
+
+            String code = handoverCode(mvc.perform(get(CONFIRMATION_CALLBACK)
+                            .param("code", "stub-authorization-code").param("state", started.state())
+                            .param("operation_type", "offer").param("operation_reference", "F-3001"))
+                    .andExpect(redirectedToConfirmationHandover()).andReturn());
+            complete(alex, code, VERIFIER).andExpect(status().isOk());
+
+            assertThat(orderStatus("O-2001")).isEqualTo("CONFIRMED");      // the stored operation
+            assertThat(offerStatus("F-3001")).isEqualTo("OPEN");
+        }
+
+        @Test
+        void storedOperationOfAnotherCustomerIsNotExecuted() throws Exception {
+            StartedConfirmation started = startConfirmation(alex);
+            jdbc.sql("UPDATE itsme_confirmation_request SET operation_reference = 'O-2002'").update();
+            stubTokenEndpoint(idToken(started.nonce()).build());
+            String code = handoverCode(confirmationCallback(started.state()).andReturn());
+
+            complete(alex, code, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("operation_not_found"));
+
+            assertThat(orderStatus("O-2002")).isEqualTo("OPEN");
+            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
+        }
+
+        @Test
+        void unknownOperationTypeIsRefused() throws Exception {
+            StartedConfirmation started = startConfirmation(alex);
+            jdbc.sql("UPDATE itsme_confirmation_request SET operation_type = 'refund'").update();
+            stubTokenEndpoint(idToken(started.nonce()).build());
+            String code = handoverCode(confirmationCallback(started.state()).andReturn());
+
+            complete(alex, code, VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("unknown_operation"));
+
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
     }
 
@@ -287,11 +450,11 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void callbackCannotBeReplayed() throws Exception {
             StartedConfirmation started = startConfirmation(alex);
             stubTokenEndpoint(idToken(started.nonce()).build());
-            confirmationCallback(alex, started.state()).andExpect(redirectedUrl("/portal"));
+            confirmationCallback(started.state()).andExpect(redirectedToConfirmationHandover());
 
-            confirmationCallback(alex, started.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=confirmation_not_found"));
-            assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=confirmation_not_found"));
+            assertThat(approvalsWaiting()).isOne();
         }
 
         @Test
@@ -301,8 +464,8 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
             clock.advance(JdbcConfirmationRequestRepository.TTL.plus(Duration.ofSeconds(1)));
 
-            confirmationCallback(alex, started.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=confirmation_not_found"));
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=confirmation_not_found"));
             confirmationRequests.purgeExpired();
             assertThat(pendingConfirmations()).isZero();
         }
@@ -312,8 +475,8 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedLogin login = startLogin();
             stubTokenEndpoint(idToken(login.nonce()).build());
 
-            confirmationCallback(alex, login.state())
-                    .andExpect(redirectedUrl("/portal/confirmation/error?error=confirmation_not_found"));
+            confirmationCallback(login.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=confirmation_not_found"));
         }
 
         @Test
@@ -327,15 +490,16 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void noSessionIsCreatedDuringTheWholeConfirmation() throws Exception {
-            MvcResult portal = mvc.perform(get("/portal").cookie(alex)).andExpect(status().isOk()).andReturn();
-            MvcResult start = mvc.perform(confirmButton(alex)).andReturn();
-            StartedConfirmation started = started(start);
-            stubTokenEndpoint(idToken(started.nonce()).build());
-            MvcResult callback = confirmationCallback(alex, started.state()).andExpect(redirectedUrl("/portal")).andReturn();
-
-            for (MvcResult result : new MvcResult[] {portal, start, callback}) {
+            for (MvcResult result : wholeConfirmation()) {
                 assertThat(result.getRequest().getSession(false)).isNull();
                 assertThat(result.getResponse().getCookie("JSESSIONID")).isNull();
+            }
+        }
+
+        @Test
+        void noCookieIsSetDuringTheWholeConfirmation() throws Exception {
+            for (MvcResult result : wholeConfirmation()) {
+                assertThat(result.getResponse().getHeaders("Set-Cookie")).isEmpty();
             }
         }
     }
@@ -346,61 +510,91 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     private record StartedConfirmation(String location, String state, String nonce, String requestObject) {}
 
-    private Cookie sessionOf(String sub) throws Exception {
-        return login(t -> t.sub(sub)).andExpect(redirectedUrl("/portal")).andReturn()
-                .getResponse().getCookie(DemoSession.COOKIE);
+    /** A complete login of the SPA: the token it keeps after the hand-over. */
+    private String tokenOf(String sub) throws Exception {
+        return tokenAfter(login(t -> t.sub(sub)).andExpect(redirectedToLoginHandover()).andReturn());
     }
 
-    /**
-     * The "Confirm with itsme" form as a browser submits it: the session cookie, the CSRF cookie set by the portal
-     * page, and the CSRF token read from that page. (Spring Security's csrf() test helper is not used: it replaces
-     * the token repository of the shared filter chain with one that creates an HttpSession.)
-     */
-    private MockHttpServletRequestBuilder confirmButton(Cookie session) throws Exception {
-        CsrfPair csrf = csrfFromPortal(session);
-        return post("/portal/confirmation").cookie(session, csrf.cookie()).param("_csrf", csrf.token());
+    private static MockHttpServletRequestBuilder withToken(MockHttpServletRequestBuilder request, String token) {
+        return request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
     }
 
-    private record CsrfPair(Cookie cookie, String token) {}
-
-    private CsrfPair csrfFromPortal(Cookie session) throws Exception {
-        MvcResult portal = mvc.perform(get("/portal").cookie(session)).andExpect(status().isOk()).andReturn();
-        Matcher token = Pattern.compile("name=\"_csrf\" value=\"([^\"]+)\"")
-                .matcher(portal.getResponse().getContentAsString());
-        assertThat(token.find()).as("CSRF token in the portal page").isTrue();
-        Cookie cookie = portal.getResponse().getCookie("XSRF-TOKEN");
-        assertThat(cookie).as("CSRF cookie").isNotNull();
-        return new CsrfPair(cookie, token.group(1));
+    /** The customer clicks a button in the SPA: the SPA sends its verifier with the bearer token. */
+    private ResultActions start(String token, String action) throws Exception {
+        return mvc.perform(withToken(post(action), token).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("handoverVerifier", VERIFIER))));
     }
 
-    /** The customer clicks "Confirm with itsme" on the portal. */
-    private StartedConfirmation startConfirmation(Cookie session) throws Exception {
-        return started(mvc.perform(confirmButton(session))
-                .andExpect(status().is3xxRedirection())
-                .andReturn());
+    /** The customer clicks "Confirm order" for O-2001. */
+    private StartedConfirmation startConfirmation(String token) throws Exception {
+        return startConfirmation(token, CONFIRM_ORDER);
     }
 
-    private static StartedConfirmation started(MvcResult result) {
-        String location = result.getResponse().getRedirectedUrl();
+    private StartedConfirmation startConfirmation(String token, String action) throws Exception {
+        String body = start(token, action).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String location = json.readTree(body).get("redirect").asString();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(location).build().getQueryParams();
         return new StartedConfirmation(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")),
                 decode(query.getFirst("request")));
     }
 
-    /** itsme redirects the browser back to the portal with a code. */
-    private ResultActions confirmationCallback(Cookie session, String state) throws Exception {
-        return mvc.perform(get(CONFIRMATION_CALLBACK).cookie(session)
-                .param("code", "stub-authorization-code").param("state", state));
+    /** itsme redirects the browser back with a code. The navigation carries no credential. */
+    private ResultActions confirmationCallback(String state) throws Exception {
+        return mvc.perform(get(CONFIRMATION_CALLBACK).param("code", "stub-authorization-code").param("state", state));
     }
 
-    /** A complete confirmation where the test only describes the ID token returned by itsme. */
-    private ResultActions confirm(Cookie session, UnaryOperator<ItsmeWireMock.IdTokenBuilder> token) throws Exception {
-        StartedConfirmation started = startConfirmation(session);
-        stubTokenEndpoint(token.apply(idToken(started.nonce())).build());
-        return confirmationCallback(session, started.state());
+    /** Start and callback, where the test only describes the ID token returned by itsme. */
+    private ResultActions approve(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
+        StartedConfirmation started = startConfirmation(token);
+        stubTokenEndpoint(idToken.apply(idToken(started.nonce())).build());
+        return confirmationCallback(started.state());
+    }
+
+    /** The SPA redeems the approval with a verifier and a bearer token. */
+    private ResultActions complete(String token, String code, String verifier) throws Exception {
+        return mvc.perform(withToken(post(COMPLETE), token).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("handover", code, "verifier", verifier))));
+    }
+
+    /** A complete confirmation: start, callback, and the SPA's completion with the right verifier. */
+    private ResultActions confirm(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
+        return complete(token, handoverCode(approve(token, idToken)
+                .andExpect(redirectedToConfirmationHandover()).andReturn()), VERIFIER);
+    }
+
+    /** Portal API, start, callback and completion, as the SPA makes them. */
+    private List<MvcResult> wholeConfirmation() throws Exception {
+        MvcResult portal = portal(alex).andExpect(status().isOk()).andReturn();
+        MvcResult start = start(alex, CONFIRM_ORDER).andExpect(status().isOk()).andReturn();
+        String location = json.readTree(start.getResponse().getContentAsString()).get("redirect").asString();
+        stubTokenEndpoint(idToken(decode(UriComponentsBuilder.fromUriString(location).build().getQueryParams()
+                .getFirst("nonce"))).build());
+        String state = decode(UriComponentsBuilder.fromUriString(location).build().getQueryParams().getFirst("state"));
+        MvcResult callback = confirmationCallback(state).andExpect(redirectedToConfirmationHandover()).andReturn();
+        MvcResult complete = complete(alex, handoverCode(callback), VERIFIER).andExpect(status().isOk()).andReturn();
+        return List.of(portal, start, callback, complete);
+    }
+
+    private static ResultMatcher redirectedToConfirmationHandover() {
+        return result -> assertThat(result.getResponse().getRedirectedUrl())
+                .matches("/#confirmation=[A-Za-z0-9_-]{43}");
     }
 
     private long pendingConfirmations() {
         return jdbc.sql("SELECT COUNT(*) FROM itsme_confirmation_request").query(Long.class).single();
+    }
+
+    private long approvalsWaiting() {
+        return jdbc.sql("SELECT COUNT(*) FROM itsme_confirmation_handover").query(Long.class).single();
+    }
+
+    private String orderStatus(String orderId) {
+        return jdbc.sql("SELECT status FROM customer_order WHERE order_id = :id").param("id", orderId)
+                .query(String.class).single();
+    }
+
+    private String offerStatus(String offerId) {
+        return jdbc.sql("SELECT status FROM offer WHERE offer_id = :id").param("id", offerId)
+                .query(String.class).single();
     }
 }

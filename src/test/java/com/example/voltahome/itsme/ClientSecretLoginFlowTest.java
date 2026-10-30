@@ -5,9 +5,9 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -23,7 +23,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
-import tools.jackson.databind.ObjectMapper;
 
 /**
  * The same login with the client secret method (itsme.client-authentication=client-secret):
@@ -41,7 +40,6 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     }
 
     @Autowired ItsmeDiscoveryCheck discoveryCheck;
-    @Autowired ObjectMapper json;
     @Autowired ItsmeConfirmationService confirmation;
 
     @Override
@@ -76,7 +74,7 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void tokenRequestUsesClientSecretPostAndPkce() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal"));
+        login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover());
 
         Map<String, String> form = formParams(
                 itsme.findAll(postRequestedFor(urlEqualTo("/v2/token"))).get(0).getBodyAsString());
@@ -88,9 +86,9 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void linkedItsmeAccountLogsTheCustomerIn() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover()).andReturn();
 
-        openPortal(result)
+        portal(tokenAfter(result))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("C-1001")));
     }
@@ -130,14 +128,14 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void confirmationIsNotOfferedWithTheClientSecretMethod() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover()).andReturn();
 
-        openPortal(result)
+        portal(tokenAfter(result))
                 .andExpect(status().isOk())
-                .andExpect(content().string(not(containsString("action=\"/portal/confirmation\""))));
+                .andExpect(jsonPath("$.confirmationAvailable").value(false));
         assertThat(confirmation.isAvailable()).isFalse();
         assertThatThrownBy(() -> confirmation.start(new MockHttpServletRequest(), "C-1001",
-                        new ItsmeOperation("op", ItsmeFreeText.builder().text("Operation").build())))
+                        new ItsmeOperation("order", "O-2001", ItsmeFreeText.builder().text("Operation").build()), VERIFIER))
                 .isInstanceOfSatisfying(ItsmeConfirmationException.class,
                         e -> assertThat(e.code()).isEqualTo("confirmation_unavailable"));
     }

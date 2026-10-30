@@ -6,7 +6,8 @@ A runnable reference implementation of a customer login with **itsme** (OpenID C
   - **key pairs** (`private-key-jwt`, the default, recommended by itsme): the authorization request travels in a Request Object signed by us and encrypted for itsme; ID tokens are signed by itsme and encrypted with our public key;
   - **client secret** (`client-secret`): a shared secret, parameters in the URL, ID tokens encrypted with a key derived from the secret.
 - **Authentication, not identification**: no personal data is requested from itsme. The customer is found through the itsme `sub` (a pseudonym) already linked to their account; an itsme account that is not linked is refused. See [Authentication, not identification](#authentication-not-identification).
-- **Confirmation of an operation**: a logged-in customer approves one operation in the itsme app, from a button in the protected portal. The approval counts only if it comes from the itsme account linked to that customer. See [Confirmation of an operation](#confirmation-of-an-operation).
+- **Confirmation of an operation**: a logged-in customer approves an operation in the itsme app (confirm an order, accept an offer), from a button in the protected portal. All operations share one callback. The approval counts only if it comes from the itsme account linked to that customer. See [Confirmation of an operation](#confirmation-of-an-operation).
+- **A single page application without cookies**: the itsme callbacks are on the backend, which sends the browser back to the SPA with a one-time code in the URL fragment; the SPA redeems it with an AJAX call and receives the application's token as JSON. A verifier sent at the start binds the code to the browser that started the flow. See [Hand-over](#hand-over).
 - **Runs with IntelliJ and a JDK only**: no database server, no itsme credentials, and no Docker needed. Docker is optional; see [Run with Docker](#run-with-docker). In the tests, itsme is replaced by **WireMock**; when the application runs locally, it serves an **itsme stub** itself (`local` profile). The database is **H2 in memory**.
 
 > **Scope of the stubs.** WireMock and the itsme stub reproduce our reading of the public itsme v2 documentation. They prove that the code is consistent with that reading, not with itsme's real behaviour. Points marked *to be confirmed in E2E* must be verified against the itsme E2E environment.
@@ -107,7 +108,7 @@ Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nim
 
 | itsme account | Expected result |
 |---|---|
-| Alex Martin — itsme linked | The protected portal page (customer `C-1001`) |
+| Alex Martin — itsme linked | The protected portal (customer `C-1001`), shown by the demo SPA from the protected API |
 | Sam Peeters — customer, itsme not linked | Error page: itsme account not linked |
 | Someone who is not a customer | Error page: itsme account not linked (same answer as Sam: the application cannot tell them apart) |
 | Robin Dubois — contract closed | Error page: account no longer active |
@@ -115,11 +116,11 @@ Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nim
 | Fingerprint only (acr basic) | Error page (ID token rejected) |
 | Cancel | Error page: login cancelled |
 
-**Confirm an operation** (key pairs only): on the portal, click **Confirm with itsme**. The itsme stub shows the text the itsme app would display, then the same test accounts:
+**Confirm an operation** (key pairs only): on the portal, click **Confirm order** or **Accept offer**. The itsme stub shows the text the itsme app would display, then the same test accounts:
 
 | itsme account | Expected result |
 |---|---|
-| Alex Martin | Back to the portal; the operation is listed as confirmed |
+| Alex Martin | Back to the portal; the order or offer is listed as confirmed and its button is gone |
 | Sam Peeters, someone who is not a customer, Robin Dubois | Error page: not the itsme account linked to your VoltaHome account (`wrong_person`) |
 | Phone call in progress | Error page: operation blocked |
 | Fingerprint only (acr basic) | Error page (ID token rejected) |
@@ -128,6 +129,7 @@ Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nim
 **Things to try**
 - Key pairs: add `&acr_values=x` to the URL of the itsme stub page and reload. The stub says it ignores it: only the signed and encrypted Request Object counts.
 - Client secret: remove `acr_values` from the URL of the itsme stub page and reload, then log in as Alex. itsme falls back to the basic level, and the application rejects the ID token: without a Request Object, the `acr` check on the response is the protection.
+- Hand-over: after logging in, look at the address bar: the one-time code is already gone from it. Reload the page: you stay logged in (the token is in `sessionStorage`). Open the portal in a new tab: you are not logged in there (`sessionStorage` belongs to one tab). The test `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode` shows what happens to a code opened in another browser.
 
 **How the itsme stub works** (`local` package): served by the application under `/itsme-stub/v2`, with its own key pairs (`ItsmeStubCrypto`, shared with the tests). It decrypts the Request Object when there is one and verifies our signature with our public keys, read from `/.well-known/jwks.json` like itsme would; checks the redirect URI, PKCE, a single-use code valid for 3 minutes and the client authentication of the configured method; and returns ID tokens encrypted for that method. A request with the confirmation service scope is a confirmation: the stub then requires a Request Object with the `free_text` template, checks the confirmation redirect URI, and shows the text to approve. `ItsmeStubGuard` stops the application if the `local` profile is used with non-localhost endpoints.
 
@@ -164,8 +166,8 @@ The containers use `mvn` rather than `./mvnw`. The wrapper's pinned checksum is 
 | Data requested from itsme | No identity attribute; the `ongoing_call` fraud signal only |
 | Backend | Stateless: no `HttpSession`; login in progress stored in the database |
 | itsme endpoints | Static configuration (outbound proxies and firewalls opened in advance); the discovery document is only used to verify it |
-| Session after login | Out of scope: the result is handed over to the application's own token management |
-| Confirmation of an operation | From the portal, key pairs only: WYSIWYS `free_text` template in the Request Object; accepted only from the itsme account linked to the logged-in customer |
+| Session after login | Out of scope: the result is handed over to the application's own token management. No cookie: a one-time code takes the result back to the SPA, which receives the token as JSON (see [Hand-over](#hand-over)) |
+| Confirmation of an operation | From the portal, key pairs only: WYSIWYS `free_text` template in the Request Object; accepted only from the itsme account linked to the logged-in customer; several operations (order, offer) through one callback |
 
 ---
 
@@ -251,23 +253,34 @@ src/main/java/com/example/voltahome
 │   ├── JdbcAuthorizationRequestRepository   login in progress in the database
 │   ├── NoOpAuthorizedClientRepository       the itsme access token is not stored
 │   ├── ItsmeDiscoveryCheck.java             configuration vs. discovery document
-│   ├── ItsmeLoginSuccessHandler.java        hand-over
+│   ├── ItsmeLoginSuccessHandler.java        end of the login: one-time code, redirect to the SPA
+│   ├── ItsmeLoginAuthentication.java        login result with the SPA's hand-over verifier
+│   ├── ItsmeHandover.java                   one-time code and verifier (README "Hand-over")
+│   ├── JdbcLoginHandoverRepository          login result waiting for the SPA, in the database
+│   ├── ItsmeLoginHandoverController.java    POST /itsme/login/handover: the SPA redeems the code
 │   ├── ItsmeLoginFailureHandler.java        error code redirect
 │   ├── LoginHandover.java                   boundary with token management
 │   ├── ItsmeLoginResult.java                what is handed over (no itsme claim)
-│   ├── ItsmeConfirmationService.java        confirmation of an operation: start, then check itsme's answer and the person
-│   ├── ItsmeOperation.java                  what the customer is asked to approve
+│   ├── ItsmeConfirmationService.java        confirmation of an operation: start, check itsme's answer, redeem
+│   ├── ItsmeConfirmationCallbackController  /itsme/confirmation/callback: one-time code, redirect to the SPA
+│   ├── ItsmeOperation.java                  what the customer is asked to approve: type, reference, text
 │   ├── ItsmeFreeText.java                   the text shown in the itsme app (free_text template)
-│   ├── JdbcConfirmationRequestRepository    confirmation in progress in the database
+│   ├── JdbcConfirmationRequestRepository    confirmation in progress, then approved, in the database
 │   ├── ItsmeConfirmationResult.java         a confirmed operation (no itsme claim)
 │   └── ItsmeConfirmationException.java      not confirmed: error code
+├── operation/                               several operations, one callback
+│   ├── ConfirmableOperation.java            one kind of operation: its text, its execution
+│   ├── ConfirmableOperations.java           the operations by type: prepare at the start, execute after itsme
+│   └── OperationException.java              not started or not executed: error code
 ├── security/SecurityConfig.java             stateless filter chain
 ├── customer/                                customer lookup (stands in for the existing customer table)
 ├── fraud/                                   fraud signals (demo implementation)
-├── demo/                                    DEMO ONLY: home page, error page, hand-over issuing a demo session
-│                                            cookie, protected portal page and its filter chain, the "Confirm with
-│                                            itsme" button and callback (DemoConfirmationController), confirmed
-│                                            operations (DemoConfirmedOperations)
+├── demo/                                    DEMO ONLY: hand-over issuing a demo bearer token (DemoLoginHandover,
+│                                            DemoToken), the protected API and its filter chain (DemoController,
+│                                            DemoSecurityConfig), the start and completion of a confirmation
+│                                            (DemoConfirmationController), the two operations (DemoOrderConfirmation,
+│                                            DemoOfferAcceptance), confirmed operations (DemoConfirmedOperations),
+│                                            the SPA's routes (DemoWebConfig)
 └── local/                                   LOCAL ONLY (profile "local"): the itsme stub, a stand-in for itsme
     ├── ItsmeStubController.java             the stub's endpoints and its approval page (/itsme-stub/v2)
     ├── ItsmeStubScenario.java               test itsme accounts offered by the stub page
@@ -275,18 +288,22 @@ src/main/java/com/example/voltahome
     ├── ItsmeStubGuard.java                  stops the application if the stub would run with non-localhost endpoints
     └── ItsmeStubSecurityConfig.java         filter chain that opens /itsme-stub/** without login
 
+src/main/resources/static/index.html         DEMO ONLY: the SPA (one page, plain JavaScript)
+
 src/test/java/com/example/voltahome
 ├── support/ItsmeIntegrationTest.java        application + H2 + WireMock itsme, helpers
 ├── support/ItsmeWireMock.java               WireMock stubs + ID token builder (itsme format)
 ├── support/MutableClock.java                test clock, to test expiry without waiting
 ├── support/TestClockConfig.java             makes MutableClock the application clock in tests
-├── itsme/ItsmeLoginFlowTest.java            protocol scenarios, key pairs
+├── itsme/ItsmeLoginFlowTest.java            protocol scenarios and hand-over to the SPA, key pairs
 ├── itsme/ClientSecretLoginFlowTest.java     what differs with a client secret
 ├── itsme/ItsmeCryptoTest.java               nested signed JWT check
 ├── itsme/ItsmeKeysTest.java                 ephemeral keys refused outside localhost
-├── itsme/ItsmeConfirmationFlowTest.java     confirmation scenarios: the right person, the ID token, the state
+├── itsme/ItsmeConfirmationFlowTest.java     confirmation scenarios: several operations, the right person, the ID
+│                                            token, the state
 ├── itsme/ItsmeFreeTextTest.java             the text shown in the itsme app
-├── demo/DemoSessionTest.java                protected portal and its demo session cookie
+├── operation/ConfirmableOperationsTest.java  operations by type
+├── demo/DemoTokenTest.java                  protected API and its demo bearer token
 └── local/ItsmeStubGuardTest.java            itsme stub refused outside localhost
 ```
 
@@ -302,8 +319,8 @@ sequenceDiagram
     participant I as itsme
     participant D as Database
 
-    U->>B: GET /oauth2/authorization/itsme
-    Note over B: state, nonce, code_verifier stored (5 min)<br/>Request Object signed by us, encrypted for itsme
+    U->>B: POST /oauth2/authorization/itsme (handover_verifier, from the SPA)
+    Note over B: state, nonce, code_verifier, handover verifier stored (5 min)<br/>Request Object signed by us, encrypted for itsme
     B-->>U: 302 to itsme (request, PKCE)
     U->>I: Approves in the itsme app
     I-->>U: 302 to /login/oauth2/code/itsme with code and state
@@ -313,7 +330,10 @@ sequenceDiagram
     Note over B: Decrypt, verify signature, iss, aud, exp, nonce, acr
     B->>D: Customer by sub
     alt sub linked to an active customer
-        Note over B: Hand-over to token management
+        B->>D: Login result behind a one-time code (60 s)
+        B-->>U: 302 to the SPA, /#handover=code
+        U->>B: POST /itsme/login/handover (code, verifier), AJAX
+        Note over B: Hand-over to token management: JSON answer with the token
     else sub unknown
         B-->>U: 302 to the error page (not_linked)
     end
@@ -355,9 +375,9 @@ Key pairs method only. The application owns two RSA key pairs (itsme supports RS
 | `proxy.host`, `proxy.port` | Outbound proxy; empty host = direct connection |
 | `keys.*` | Key pairs method only; see [Keys](#keys) |
 | `confirmation.service-code` | The itsme service registered as a *Confirmation* service, issued at onboarding |
-| `confirmation.redirect-uri` | Absolute URL of `/portal/confirmation/callback`, identical to the value registered at itsme |
+| `confirmation.redirect-uri` | Absolute URL of `/itsme/confirmation/callback`, identical to the value registered at itsme |
 
-Outside the `itsme` prefix: `app.login-error-url` (where `ItsmeLoginFailureHandler` redirects).
+Outside the `itsme` prefix, where the backend sends the browser back to the SPA (README: "Hand-over"): `app.login-handover-url` and `app.confirmation-handover-url` (with `#handover=<code>` or `#confirmation=<code>`), `app.login-error-url` and `app.confirmation-error-url` (with `?error=<code>`).
 
 Network flows: outbound from the backend to one itsme host per environment (token endpoint, itsme JWKS, discovery), and, with key pairs only, **inbound** from itsme to our `/.well-known/jwks.json`. itsme requires TLS SNI.
 
@@ -413,7 +433,7 @@ Why the nested check matters: with key pairs, our encryption key is **public**, 
 
 ## Login in progress
 
-Between the redirect to itsme and the callback, `state`, `nonce` and `code_verifier` must survive, possibly on another instance. `JdbcAuthorizationRequestRepository` stores them in `itsme_authorization_request` for 5 minutes. At callback time the row is read and deleted; checking the number of deleted rows makes it single-use without database-specific SQL, even when two callbacks arrive at the same time. Abandoned rows are purged every 15 minutes.
+Between the redirect to itsme and the callback, `state`, `nonce` and `code_verifier`, and the SPA's hand-over verifier (see [Hand-over](#hand-over)), must survive, possibly on another instance. `JdbcAuthorizationRequestRepository` stores them in `itsme_authorization_request` for 5 minutes. At callback time the row is read and deleted; checking the number of deleted rows makes it single-use without database-specific SQL, even when two callbacks arrive at the same time. Abandoned rows are purged every 15 minutes.
 
 ---
 
@@ -429,27 +449,49 @@ Between the redirect to itsme and the callback, `state`, `nonce` and `code_verif
 | `NullRequestCache` | `HttpSessionRequestCache` |
 | Custom success handler | `SavedRequestAwareAuthenticationSuccessHandler` |
 
-CSRF protection is disabled in this chain because it serves no form: the login is a GET redirect, and the callback is protected by `state`. An application with forms keeps its existing CSRF setup. The portal chain has a form (the confirmation button) and keeps CSRF protection on, with the token in a cookie (`CookieCsrfTokenRepository`) instead of the session. The tests `noSessionIsCreatedDuringTheWholeFlow` and `noSessionIsCreatedDuringTheWholeConfirmation` verify that no session and no `JSESSIONID` cookie are created.
+CSRF protection is disabled in this chain and in the demo API chain because no cookie is set or read anywhere: a forged cross-site request carries no credential. The itsme callbacks are protected by `state`, the hand-over call by the one-time code and the SPA's verifier, and the API by the bearer token that only the SPA's code sends. An application that uses cookies keeps its existing CSRF setup. The tests `noSessionIsCreatedDuringTheWholeFlow` and `noSessionIsCreatedDuringTheWholeConfirmation` verify that no session and no `JSESSIONID` cookie are created; `noCookieIsSetDuringTheWholeFlow` and `noCookieIsSetDuringTheWholeConfirmation` verify that no cookie at all is set.
 
 ---
 
 ## Hand-over
 
-The itsme integration ends with the success handler passing an `ItsmeLoginResult` (customer id, method, level, time — no itsme claim) to a `LoginHandover`. Issuing the application's own token or session is out of scope. The callback is a browser navigation, not an XHR call: the hand-over answers with a page or a redirect.
+The frontend is a single page application (SPA), and the application uses **no cookie**: the SPA calls the API with a bearer token. The itsme callbacks are on the backend, because only the backend can exchange the code (client assertion or secret, PKCE `code_verifier`). But a callback is a browser navigation: it cannot answer with JSON (the browser would show it instead of the SPA), and it carries no credential. So every itsme flow ends the same way:
 
-The `demo` package shows the shape of a real hand-over, with a stand-in for the application's session:
+1. **Start.** The SPA generates a random **verifier** (256 bits), keeps it in `localStorage`, and sends it in the **body** of the request that starts the flow: a form POST to `/oauth2/authorization/itsme` (parameter `handover_verifier`) for the login, the JSON body of the start call for a confirmation. Never in a URL. The backend stores it with the flow in progress, like the PKCE `code_verifier`. Without a valid verifier, the flow does not start (`invalid_request`).
+2. **Callback.** The backend runs every check, then stores the result behind a **one-time code** (256 bits, single use, 60 seconds) and redirects to the SPA with the code in the URL **fragment** (`/#handover=<code>`, `/#confirmation=<code>`). A fragment is never sent to a server and never appears in a `Referer` header. Errors redirect to an SPA route with `?error=<code>` and nothing else.
+3. **Redemption.** The SPA removes the fragment from the address bar (`history.replaceState`) and redeems the code with an AJAX call carrying the verifier. The backend reads and deletes the row (checked delete, as for the login in progress) and compares the verifiers in constant time. A wrong verifier consumes the code: there is no second try. Unknown, expired, used and wrong-verifier codes all get the same answer (`invalid_handover`).
 
-- `DemoLoginHandover` asks `DemoSession` for a cookie holding a JWT signed by the application (HS256, 15 minutes, `HttpOnly`, `Secure`, `SameSite=Lax`, path `/portal`), then redirects to `/portal`;
-- `DemoSecurityConfig` adds a filter chain for `/portal/**`, evaluated before the main one. Its `DemoSessionFilter` checks the cookie on every request; without a valid cookie, the browser is sent back to the home page;
-- `/portal` shows the customer from our own customer table.
+The verifier binds the end of the flow to the browser that started it. An attacker who starts a login with their own itsme account and sends the callback link to a victim (a login CSRF) gets nothing: the victim's browser does not hold the attacker's verifier.
 
-The signing key is generated at startup and kept in memory: a restart logs everyone out, and several instances would not share it. It is a demo, not a session design. The itsme login itself never makes a later request authenticated (`RequestAttributeSecurityContextRepository` keeps it for the callback request only); only the application's own credential does. `DemoSessionTest` lists the attacks on the demo cookie.
+| | Login | Confirmation |
+|---|---|---|
+| Start | Form POST `/oauth2/authorization/itsme` | `POST /api/orders/{id}/confirm`, `/api/offers/{id}/accept` (bearer token) |
+| Verifier stored in | `itsme_authorization_request` | `itsme_confirmation_request` |
+| Callback | `/login/oauth2/code/itsme` (Spring `oauth2Login()`) | `/itsme/confirmation/callback` |
+| One-time code stored in | `itsme_login_handover` | `itsme_confirmation_handover` |
+| Redeemed by | `POST /itsme/login/handover` (no token yet) | `POST /api/confirmation/complete` (bearer token) |
+| Returns | What `LoginHandover` returns: the application's token and our customer data | The confirmed operation, executed at that moment |
+
+The login and the confirmation use separate tables: a login code cannot complete a confirmation, and a confirmation code cannot end a login. All the state is in the database, so every step can reach any instance of the backend.
+
+The itsme integration ends with `LoginHandover.complete(ItsmeLoginResult)` (customer id, method, level, time — no itsme claim), called when the SPA redeems the login code. It returns the JSON body of the answer. Issuing the application's own token is out of scope; the token travels in that body only, never in a URL or a cookie. `ItsmeLoginSuccessHandler` gets the verifier of the login that just ended through `ItsmeLoginAuthentication`, built by the login filter's result converter (`SecurityConfig`).
+
+The `demo` package shows the shape of a real hand-over, with stand-ins for the application's token and SPA:
+
+- `DemoLoginHandover` asks `DemoToken` for a JWT signed by the application (HS256, 15 minutes) and returns it with our customer data;
+- the SPA (`static/index.html`) keeps the token in `sessionStorage` and sends it as `Authorization: Bearer` on every API call. It survives a reload and the round trip to itsme in the same tab; it is readable by any script on the page, so the application's Content-Security-Policy and short token lifetime matter. If itsme returns in another tab, the customer logs in again;
+- `DemoSecurityConfig` adds a filter chain for `/api/**`, evaluated before the main one, which checks the token with Spring's resource server support. Without a valid token: 401;
+- `/api/portal` returns the customer from our own customer table, and the open orders and offers.
+
+The signing key is generated at startup and kept in memory: a restart logs everyone out, and several instances would not share it. It is a demo, not a token design. The itsme login itself never makes a later request authenticated (`RequestAttributeSecurityContextRepository` keeps it for the callback request only); only the application's own token does. `DemoTokenTest` lists the attacks on the demo token.
+
+Tests (`ItsmeLoginFlowTest`, nested class `Handover`): `loginCannotStartWithoutHandoverVerifier`, `loginCannotStartWithTheVerifierInTheUrl`, `handoverVerifierIsKeptWithTheLoginAndNotSentToItsme`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `handoverReturnsTheTokenAndOurCustomerDataAsJson`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `handoverCodeCannotBeReplayed`, `unknownHandoverCodeIsRefused`, `handoverCodeExpiresAfterSixtySecondsAndIsPurged`, `failedLoginLeavesNothingToRedeem`, `noCookieIsSetDuringTheWholeFlow`. The confirmation's are listed in [Confirmation of an operation](#tests).
 
 ---
 
 ## Confirmation of an operation
 
-itsme offers a third service type besides authentication and identification: **confirmation**. The customer approves one operation in the itsme app, and the app shows the operation's text before the approval. The sample adds it to the protected portal: a **Confirm with itsme** button sets the monthly advance payment to EUR 85.00 for the logged-in customer.
+itsme offers a third service type besides authentication and identification: **confirmation**. The customer approves one operation in the itsme app, and the app shows the operation's text before the approval. The sample adds it to the protected portal, for two operations: **Confirm order** confirms an open order, and **Accept offer** accepts an open offer. Both end at the same callback (see [Several operations, one callback](#several-operations-one-callback)).
 
 ### What the itsme documentation says
 
@@ -467,63 +509,85 @@ Because itsme returns no proof, **the application's own checks are what make an 
 | Question | Answered by | Code |
 |---|---|---|
 | Is this answer for this confirmation? | `state` (single use, 5 minutes), `nonce`, PKCE | `JdbcConfirmationRequestRepository`, Spring's `OidcAuthorizationCodeAuthenticationProvider` |
-| Was the text the customer saw the one we sent? | Text fixed on the server, inside the signed and encrypted Request Object; never in the URL, never read from the callback | `DemoConfirmationController`, `ItsmeRequestObjectFactory` |
-| Is it the customer who started it? | The customer of the session on the callback must be the one stored at the start | `ItsmeConfirmationService.complete` (`wrong_customer`) |
-| **Was it approved by the right person?** | The ID token `sub` must be the itsme account linked to that customer *now*. Any other itsme account is refused and reported as a fraud signal (`WRONG_ITSME_ACCOUNT`) | `ItsmeConfirmationService.complete` (`wrong_person`) |
+| Was the text the customer saw the one we sent? | Text built on the server from the stored order or offer, inside the signed and encrypted Request Object; never in the URL, never read from the callback | `DemoOrderConfirmation`, `DemoOfferAcceptance`, `ItsmeRequestObjectFactory` |
+| Is the order or offer the customer's? | Read for the logged-in customer only, at the start and again at execution | `ConfirmableOperation` implementations (`operation_not_found`) |
+| Which operation does the answer execute? | The type and reference stored at the start, never the callback URL | `ConfirmableOperations.execute` (`unknown_operation`) |
+| Is it the customer who started it? | The customer of the bearer token that redeems the approval must be the one stored at the start. The callback carries no credential, so this is checked at redemption, and the operation is executed only then | `ItsmeConfirmationService.redeem` (`wrong_customer`) |
+| Is it the browser that started it? | The verifier sent at the start must come back with the one-time code (see [Hand-over](#hand-over)) | `ItsmeConfirmationService.redeem` (`invalid_handover`) |
+| **Was it approved by the right person?** | The ID token `sub` must be the itsme account linked to that customer *now*. Any other itsme account is refused and reported as a fraud signal (`WRONG_ITSME_ACCOUNT`) | `ItsmeConfirmationService.approve` (`wrong_person`) |
 | Was the itsme code used? | `acr_advanced`, as for the login | `AcrValidator` |
-| Was the customer on the phone with someone? | `ongoing_call`, refused and reported, as for the login | `ItsmeConfirmationService.complete` (`fraud_suspected`) |
+| Was the customer on the phone with someone? | `ongoing_call`, refused and reported, as for the login | `ItsmeConfirmationService.approve` (`fraud_suspected`) |
 | Is the ID token from itsme? | Nested signed JWT, decryption, signature, `iss`, `aud`, `exp` | The same decoder as the login (`idTokenDecoderFactory`) |
 
 Without the `sub` check, any itsme account could approve the operation, for example a fraudster's own account, in a session where the fraudster is logged in as the victim.
 
 ### Choices made in the sample
 
-- **Key pairs only.** itsme requires a signed Request Object for a confirmation. The client secret method has no signing key, and without a Request Object the text would travel in the URL, where it can be edited, with nothing in the answer to detect it. With `client-secret`, the portal does not show the button and `ItsmeConfirmationService.start` refuses (`confirmation_unavailable`).
+- **Key pairs only.** itsme requires a signed Request Object for a confirmation. The client secret method has no signing key, and without a Request Object the text would travel in the URL, where it can be edited, with nothing in the answer to detect it. With `client-secret`, the portal API reports `confirmationAvailable: false`, the SPA shows no button, and `ItsmeConfirmationService.start` refuses (`confirmation_unavailable`).
 - **`free_text` only.** `adv_payment` describes the amount as "a string holding an integer" without saying in which unit (euros or cents). Add it once that is confirmed with itsme.
 - **Text built, not escaped.** `ItsmeFreeText` emits only the tags itsme renders, checks the length and the character set, and refuses `<`, `>` and `&` in the text: the documentation does not say whether HTML entities are decoded.
 - **Template under `id_token`.** The documentation does not say whether the template goes under `id_token` or `userinfo`. The sample uses `id_token`, like the login, and never calls UserInfo (*to be confirmed in E2E*).
-- **Not a login.** The confirmation registration (`itsme-confirmation`) is not in the login's `ClientRegistrationRepository`, and its callback is under `/portal`, outside `oauth2Login()`. A confirmation `state` cannot end a login, and a login `state` cannot end a confirmation. The confirmation authenticates nobody: its result is never put in a security context.
-- **In the portal.** The button is a POST form protected against CSRF. The callback is in the portal filter chain: without a valid demo session, the browser is sent to the home page and nothing is executed.
-- **The result is the evidence.** `ItsmeConfirmationResult` carries the customer, the operation reference, the exact text approved, the level and the time, and no itsme claim. A real application executes the operation and keeps this record in its audit trail. The demo keeps it in memory (`DemoConfirmedOperations`) and lists it on the portal.
+- **Not a login.** The confirmation registration (`itsme-confirmation`) is not in the login's `ClientRegistrationRepository`, and its callback (`/itsme/confirmation/callback`) is outside `oauth2Login()`. A confirmation `state` cannot end a login, and a login `state` cannot end a confirmation. The confirmation authenticates nobody: its result is never put in a security context.
+- **Three steps, one execution.** The start is an API call with the customer's token. The callback checks itsme's answer and stores the approval, but executes nothing: it carries no credential. The completion, an API call with the customer's token, the one-time code and the verifier, executes the operation.
+- **The result is the evidence.** `ItsmeConfirmationResult` carries the customer, the operation type and reference, the exact text approved, the level and the time, and no itsme claim. A real application keeps this record in its audit trail. The demo keeps it in memory (`DemoConfirmedOperations`) and lists it on the portal.
+
+### Several operations, one callback
+
+A real application asks for confirmation of several kinds of operations: confirm an order, accept an offer, and so on. The records already exist in the application's own tables (here `customer_order` and `offer`, demo stand-ins). The sample shows how they share one itsme confirmation service and one callback (`/itsme/confirmation/callback`), so there is one redirect URI to register with itsme:
+
+- **One start endpoint per operation** (`POST /api/orders/{id}/confirm`, `POST /api/offers/{id}/accept`). The endpoint fixes the type. `ConfirmableOperations.prepare` reads the record **for the logged-in customer only** and builds the text from it. A record of another customer, or one that is no longer open, is refused (`operation_not_found`) before anything is sent to itsme.
+- **The type and the reference are stored** with the confirmation in progress (`itsme_confirmation_request.operation_type`, `operation_reference`). The reference is the id of the existing record. `itsme/` stores both without interpreting them.
+- **One callback and one completion for all operations.** The callback checks itsme's answer (`ItsmeConfirmationService.approve`); when the SPA redeems the approval (`ItsmeConfirmationService.redeem`), `ConfirmableOperations.execute` picks the operation by the **stored** type and executes it on the **stored** reference. Nothing in the callback URL or in the completion call chooses the operation. An unknown type is refused (`unknown_operation`).
+- **Execution checks the customer again.** Each operation runs a conditional update limited to the customer and to an open record (`WHERE order_id = :id AND customer_id = :customer AND status = 'OPEN'`), and accepts only one updated row. Otherwise nothing is executed (`operation_not_found`).
+- **Each type is unique.** Two operations with the same type stop the application at startup: a confirmation of one could execute the other.
+
+To add an operation: implement `ConfirmableOperation` (a unique type, the text, the execution, every query limited to the customer) and add a start endpoint that calls `ConfirmableOperations.prepare` with that type.
+
+The order or offer is read again at execution, so it is executed as it is at that moment. The stored `approval_text`, kept in the result, records exactly what the customer saw.
 
 ### Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as Customer (logged in)
-    participant P as Portal (demo session)
+    actor U as Customer (SPA, logged in)
+    participant A as API (bearer token)
     participant S as ItsmeConfirmationService
     participant I as itsme
     participant D as Database
 
-    U->>P: POST /portal/confirmation (CSRF token)
-    P->>S: start(customer, operation)
-    S->>D: state, nonce, code_verifier, customer, text (5 min)
-    S-->>U: 302 to itsme (Request Object with the text)
+    U->>A: POST /api/orders/{id}/confirm (token, verifier)
+    A->>D: Order of this customer (ConfirmableOperations.prepare)
+    A->>S: start(customer, operation: type, id, text, verifier)
+    S->>D: state, nonce, code_verifier, customer, type, id, text, verifier (5 min)
+    A-->>U: JSON: the itsme URL (Request Object with the text)
     U->>I: Reads the text, approves in the itsme app
-    I-->>U: 302 to /portal/confirmation/callback with code and state
-    U->>P: Callback (demo session cookie)
-    P->>S: complete(request, customer of the session)
+    I-->>U: 302 to /itsme/confirmation/callback with code and state
+    U->>S: Callback (no credential)
     S->>D: Read and delete by state (single use)
     S->>I: POST /token
-    Note over S: ID token checks, as for the login<br/>same customer, ongoing_call, sub = linked sub
+    Note over S: ID token checks, as for the login<br/>ongoing_call, sub = linked sub of the stored customer
     alt approved by the linked itsme account
-        P-->>U: Operation executed, 302 to /portal
+        S->>D: Approval behind a one-time code (60 s), nothing executed
+        S-->>U: 302 to the SPA, /#confirmation=code
+        U->>A: POST /api/confirmation/complete (token, code, verifier)
+        A->>S: redeem: same verifier, same customer
+        A->>D: Execute the stored type on the stored id, for this customer
+        A-->>U: JSON: the confirmed operation
     else anything else
-        P-->>U: 302 to the error page, nothing executed
+        S-->>U: 302 to /confirmation-error?error=code, nothing executed
     end
 ```
 
 ### Tests
 
-`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid confirmation by Alex: `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `confirmationStartedByAnotherCustomerCannotBeEndedInThisSession`, `callbackWithoutSessionIsRefused`, `ongoingCallIsRejectedAndReported`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutCsrfToken`, `confirmationCannotBeStartedWithForgedCsrfToken`, `confirmationCannotBeStartedWithoutSession`, `loginEndpointCannotStartAConfirmation`, `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, and the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`). `ItsmeFreeTextTest` covers the text. `ClientSecretLoginFlowTest.confirmationIsNotOfferedWithTheClientSecretMethod` covers the client secret method.
+`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid confirmation of an order by Alex. Hand-over: `callbackExecutesNothing`, `completionWithoutTokenIsRefused`, `completionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `approvalCannotBeRedeemedTwice`, `approvalExpiresAfterSixtySecondsAndIsPurged`, `loginHandoverCodeCannotCompleteAConfirmation`, `confirmationHandoverCodeCannotEndALogin`. Several operations: `offerIsAcceptedThroughTheSameCallback`, `orderOfAnotherCustomerCannotBeSentForConfirmation`, `offerOfAnotherCustomerCannotBeSentForConfirmation`, `operationInTheCallbackUrlIsIgnored`, `storedOperationOfAnotherCustomerIsNotExecuted`, `unknownOperationTypeIsRefused`. The person and the protocol: `linkedItsmeAccountConfirmsTheOrder`, `portalListsTheOperationsOfTheCustomerOnly`, `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `confirmationStartedByAnotherCustomerCannotBeCompletedWithThisToken`, `ongoingCallIsRejectedAndReported`, `refusalInTheItsmeAppChangesNothing`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutToken`, `confirmationCannotBeStartedWithoutHandoverVerifier`, `loginEndpointCannotStartAConfirmation`, `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, `noCookieIsSetDuringTheWholeConfirmation`, and the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`). `ConfirmableOperationsTest` covers the operations by type (`duplicateOperationTypeFailsAtStartup`). `ItsmeFreeTextTest` covers the text. `ClientSecretLoginFlowTest.confirmationIsNotOfferedWithTheClientSecretMethod` covers the client secret method.
 
 ---
 
 ## Error codes
 
-`ItsmeLoginFailureHandler` redirects to `app.login-error-url?error=<code>`. The page maps each code to a fixed message (`DemoController`); it never displays the raw `error` parameter, which comes from the URL.
+`ItsmeLoginFailureHandler` redirects to `app.login-error-url?error=<code>`, an SPA route. The SPA maps each code to a fixed message (`static/index.html`); it never displays the raw `error` parameter, which comes from the URL.
 
 | Code | Cause |
 |---|---|
@@ -537,17 +601,23 @@ sequenceDiagram
 | `not_linked` | The itsme account is not linked to a customer |
 | `no_customer` | The linked customer is no longer active |
 | `fraud_suspected` | Phone call in progress during approval |
+| `invalid_request` | At the start: no valid hand-over verifier, or not a POST |
 
-The confirmation redirects to `/portal/confirmation/error?error=<code>` (`DemoConfirmationController`, fixed messages too). It passes on the codes above that come from itsme's answer and Spring's checks (`access_denied`, `invalid_grant`, `invalid_client`, `unauthorized_client`, `invalid_id_token`, `invalid_nonce`, `invalid_token_response`), uses `fraud_suspected` and `no_customer` with the same meaning, and adds:
+Redeeming the login code (`POST /itsme/login/handover`) answers 400 with `{"error": "invalid_handover"}` when the code is unknown, expired (> 60 s), already used, or sent with another verifier.
+
+The confirmation callback redirects to `app.confirmation-error-url?error=<code>` (`ItsmeConfirmationCallbackController`), an SPA route with fixed messages too; the start and completion calls answer 400 with `{"error": "<code>"}` (`DemoConfirmationController`). It passes on the codes above that come from itsme's answer and Spring's checks (`access_denied`, `invalid_grant`, `invalid_client`, `unauthorized_client`, `invalid_id_token`, `invalid_nonce`, `invalid_token_response`), uses `fraud_suspected` and `no_customer` with the same meaning, and adds:
 
 | Code | Cause |
 |---|---|
 | `confirmation_not_found` | Unknown, expired (> 5 min) or already used `state` |
-| `wrong_customer` | The callback arrived in the session of another customer than the one who started the confirmation |
+| `invalid_handover` | At the completion: the one-time code is unknown, expired (> 60 s), already used, or sent with another verifier |
+| `wrong_customer` | At the completion: the bearer token is another customer's than the one who started the confirmation |
 | `wrong_person` | Approved with an itsme account that is not the one linked to the customer (also a fraud signal) |
 | `not_linked` | At the start: the customer has no linked itsme account, so nobody could confirm |
 | `confirmation_unavailable` | Client secret method: confirmation is not offered |
-| `invalid_request` | Callback with neither `code` nor `error` |
+| `invalid_request` | At the start: no valid hand-over verifier. At the callback: neither `code` nor `error` |
+| `operation_not_found` | The order or offer does not exist, is not the customer's, or is no longer open: at the start, or at execution |
+| `unknown_operation` | No operation is registered for the stored type |
 
 ---
 
@@ -567,7 +637,9 @@ Each rule below protects against an attack or an operational failure. Changing o
 | 8 | **Static endpoints, no `issuer-uri`.** The discovery document is an alarm, never a source of configuration. | Startup must not depend on reaching itsme, and the hosts must be known in advance for proxies and firewalls. | `discoveryCheckReportsAMovedEndpoint`, `discoveryCheckReportsUnreachableItsme` |
 | 9 | **Explicit outbound proxy** on the `RestClient` and on the Nimbus `DefaultResourceRetriever`. | JVM-wide proxy settings change without notice; the route to itsme must be visible in the itsme configuration. | Code review (no automated test) |
 | 10 | **Ephemeral keys and the itsme stub refuse non-localhost endpoints** (`ItsmeKeys`, `ItsmeStubGuard`). | Throw-away keys or a fake itsme must never reach a shared environment. | `ephemeralKeysAreRefusedWithARealItsmeEndpoint`, `itsmeStubIsRefusedWithARealItsmeEndpoint` |
-| 11 | **Single-use login state:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL. | Two callbacks with the same `state` (double click, replay) must not both succeed. | `callbackCannotBeReplayed`, `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged` |
+| 11 | **Single-use login state and hand-over codes:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL. | Two callbacks with the same `state`, or two redemptions of the same code (double click, replay), must not both succeed. | `callbackCannotBeReplayed`, `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged`, `handoverCodeCannotBeReplayed`, `approvalCannotBeRedeemedTwice` |
+| 12 | **The confirmed operation comes from the stored confirmation, never from the callback.** Its type and reference are read from `itsme_confirmation_request`; the record is read for the logged-in customer at the start and again at execution. | Otherwise a customer could have another customer's order approved by their own itsme account, which passes every itsme check, or change in the URL which operation is executed. | `orderOfAnotherCustomerCannotBeSentForConfirmation`, `storedOperationOfAnotherCustomerIsNotExecuted`, `operationInTheCallbackUrlIsIgnored`, `unknownOperationTypeIsRefused`, `duplicateOperationTypeFailsAtStartup` |
+| 13 | **Hand-over without cookie, token or data in a URL.** An itsme callback answers with a redirect to the SPA carrying only a one-time code (single use, 60 seconds) in the fragment. Redeeming it requires the verifier the SPA sent in the body of the start request. A confirmation is executed only when redeemed with the token of the customer who started it. | A token in a URL leaks through history, logs and `Referer`; a code without verifier can be redeemed in another browser (login CSRF); a callback carries no credential, so it cannot tell who is logged in. | `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `loginCannotStartWithTheVerifierInTheUrl`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `completionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `callbackExecutesNothing`, `confirmationStartedByAnotherCustomerCannotBeCompletedWithThisToken`, `noCookieIsSetDuringTheWholeFlow` |
 
 ---
 
@@ -575,12 +647,12 @@ Each rule below protects against an attack or an operational failure. Changing o
 
 1. Copy the `itsme` and `security` packages; adapt the package names. Keep the [rules](#rules-you-must-not-change) and their tests.
 2. Replace `customer/` with the application's customer lookup and `fraud/` with the real fraud monitoring.
-3. Implement `LoginHandover` with the application's token management; delete `demo/` and `local/` (or keep `local/` for local development only).
+3. Implement `LoginHandover` with the application's token management, and in the SPA the three steps of [Hand-over](#hand-over) (verifier in the start request body, code from the fragment, redemption call); set the `app.*` URLs to the SPA's routes. Delete `demo/` and `local/` (or keep `local/` for local development only).
 4. Create the tables of `schema.sql` (except `customer`) in the application's database, and decide how `itsme_link` rows are created: the login only reads them (see [Authentication, not identification](#authentication-not-identification)).
 5. Choose the method. Key pairs: generate the two key pairs, store them in the vault, and publish `/.well-known/jwks.json` on a public host with an OV/EV certificate. Client secret: store the secret in the vault.
 6. Fill in the configuration per environment from itsme onboarding and the discovery document; give itsme the redirect URI, and with key pairs the JWKS URL.
 7. Ask itsme to enforce PKCE for the client.
-8. For the confirmation: register a separate Confirmation service and its redirect URI at itsme, replace `DemoConfirmationController` with the application's operations, and keep each `ItsmeConfirmationResult` in the operation's audit trail.
+8. For the confirmation: register a separate Confirmation service and its redirect URI at itsme, replace `DemoConfirmationController` with the application's API (start and completion, with its own token), and keep each `ItsmeConfirmationResult` in the operation's audit trail.
 9. Run the E2E checks below.
 
 ---

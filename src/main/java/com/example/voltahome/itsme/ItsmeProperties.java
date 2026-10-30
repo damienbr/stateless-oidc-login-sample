@@ -54,7 +54,7 @@ public record ItsmeProperties(
 
     /**
      * README: "Confirmation of an operation". A separate itsme service, registered as a Confirmation service, with
-     * its own redirect URI inside the portal.
+     * its own redirect URI (/itsme/confirmation/callback).
      */
     public record Confirmation(String serviceCode, String redirectUri) {}
 

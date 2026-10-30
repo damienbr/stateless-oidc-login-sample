@@ -21,8 +21,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * README: "Login in progress". Stores the login in progress (state, nonce, code_verifier) in the database,
- * so that the callback can be handled by any instance of a stateless backend.
+ * README: "Login in progress". Stores the login in progress (state, nonce, code_verifier, and the SPA's hand-over
+ * verifier) in the database, so that the callback can be handled by any instance of a stateless backend.
  * Read + checked delete makes each stored request single-use, without database-specific SQL.
  */
 @Component
@@ -48,9 +48,9 @@ public class JdbcAuthorizationRequestRepository implements AuthorizationRequestR
         jdbc.sql("""
                 INSERT INTO itsme_authorization_request
                   (state, registration_id, authorization_uri, client_id, redirect_uri, scopes,
-                   nonce, code_verifier, created_at, expires_at)
+                   nonce, code_verifier, handover_verifier, created_at, expires_at)
                 VALUES (:state, :registrationId, :authorizationUri, :clientId, :redirectUri, :scopes,
-                        :nonce, :codeVerifier, :createdAt, :expiresAt)
+                        :nonce, :codeVerifier, :handoverVerifier, :createdAt, :expiresAt)
                 """)
                 .param("state", r.getState())
                 .param("registrationId", r.getAttribute(OAuth2ParameterNames.REGISTRATION_ID))
@@ -60,6 +60,7 @@ public class JdbcAuthorizationRequestRepository implements AuthorizationRequestR
                 .param("scopes", String.join(" ", r.getScopes()))
                 .param("nonce", r.getAttribute(OidcParameterNames.NONCE))  // raw nonce; Spring hashes it to compare
                 .param("codeVerifier", r.getAttribute(PkceParameterNames.CODE_VERIFIER))
+                .param("handoverVerifier", r.getAttribute(ItsmeHandover.VERIFIER_PARAMETER))
                 .param("createdAt", Timestamp.from(now))
                 .param("expiresAt", Timestamp.from(now.plus(TTL)))
                 .update();
@@ -109,6 +110,7 @@ public class JdbcAuthorizationRequestRepository implements AuthorizationRequestR
                     String registrationId = rs.getString("registration_id");
                     String nonce = rs.getString("nonce");
                     String codeVerifier = rs.getString("code_verifier");
+                    String handoverVerifier = rs.getString("handover_verifier");
                     return OAuth2AuthorizationRequest.authorizationCode()
                             .authorizationUri(rs.getString("authorization_uri"))
                             .clientId(rs.getString("client_id"))
@@ -119,6 +121,7 @@ public class JdbcAuthorizationRequestRepository implements AuthorizationRequestR
                                 a.put(OAuth2ParameterNames.REGISTRATION_ID, registrationId);
                                 a.put(OidcParameterNames.NONCE, nonce);
                                 a.put(PkceParameterNames.CODE_VERIFIER, codeVerifier);
+                                a.put(ItsmeHandover.VERIFIER_PARAMETER, handoverVerifier);
                             })
                             .build();
                 })

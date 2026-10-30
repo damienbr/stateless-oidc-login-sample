@@ -40,8 +40,11 @@ import org.springframework.stereotype.Component;
  * - the Request Object carries the WYSIWYS text of the operation;
  * - the confirmation authenticates nobody: the result is never put in a security context;
  * - itsme returns no proof of what was approved, only an ID token. What makes the approval count is checked here:
- *   the customer who ends the confirmation is the one who started it, and the itsme account that approved it is the
- *   one linked to that customer.
+ *   the itsme account that approved it is the one linked to the customer who started it, and the customer who
+ *   redeems it is that customer.
+ * The callback is a browser navigation without credential (README: "Hand-over"): it checks itsme's answer and stores
+ * the approval behind a one-time code, but executes nothing. The SPA then redeems the code with its verifier and the
+ * customer's token, and only then is the operation executed.
  */
 @Component
 public class ItsmeConfirmationService {
@@ -66,8 +69,9 @@ public class ItsmeConfirmationService {
             ItsmeLinkRepository links, CustomerRepository customers, FraudService fraud, Clock clock) {
         this.properties = properties;
         this.registration = ItsmeClientConfig.confirmationRegistration(properties);
+        // Only resolve(request, registrationId) is used: the base URI is required by the constructor and serves nothing
         this.resolver = new DefaultOAuth2AuthorizationRequestResolver(
-                new InMemoryClientRegistrationRepository(registration), "/portal/confirmation");
+                new InMemoryClientRegistrationRepository(registration), "/itsme/confirmation/authorization");
         this.resolver.setAuthorizationRequestCustomizer(OAuth2AuthorizationRequestCustomizers.withPkce());
         this.requestObjects = requestObjects;
         this.confirmations = confirmations;
@@ -89,10 +93,18 @@ public class ItsmeConfirmationService {
         return properties.usesKeyPairs();
     }
 
-    /** Step 1: the customer clicks "Confirm". Returns the itsme URL to redirect the browser to. */
-    public URI start(HttpServletRequest request, String customerId, ItsmeOperation operation) {
+    /**
+     * Step 1: the customer clicks "Confirm" in the SPA, which calls the backend. Returns the itsme URL the SPA then
+     * sends the browser to.
+     * @param handoverVerifier the random value the SPA keeps until step 3, sent in the body of this request
+     */
+    public URI start(HttpServletRequest request, String customerId, ItsmeOperation operation,
+                     String handoverVerifier) {
         if (!isAvailable()) {
             throw new ItsmeConfirmationException("confirmation_unavailable");
+        }
+        if (!ItsmeHandover.isVerifier(handoverVerifier)) {
+            throw new ItsmeConfirmationException("invalid_request");
         }
         if (links.findSubByCustomer(customerId).isEmpty()) {
             throw new ItsmeConfirmationException("not_linked");     // nobody could confirm it
@@ -102,25 +114,21 @@ public class ItsmeConfirmationService {
                 ItsmeClaims.confirmation(operation.text()));
         confirmations.save(new PendingConfirmation(authorization.getState(), customerId, operation,
                 authorization.getAttribute(OidcParameterNames.NONCE),
-                authorization.getAttribute(PkceParameterNames.CODE_VERIFIER)));
+                authorization.getAttribute(PkceParameterNames.CODE_VERIFIER), handoverVerifier));
         return URI.create(authorization.getAuthorizationRequestUri());
     }
 
     /**
-     * Step 2: itsme redirects the browser back. Returns the confirmed operation, or throws an
-     * ItsmeConfirmationException: the operation must then not be executed.
-     * @param customerId the customer logged in on the request that carries the callback
+     * Step 2: itsme redirects the browser back. Checks itsme's answer and returns the one-time code under which the
+     * approval waits for step 3, or throws an ItsmeConfirmationException. Executes nothing: this request carries no
+     * credential, so it cannot tell who is logged in.
      */
-    public ItsmeConfirmationResult complete(HttpServletRequest request, String customerId) {
+    public String approve(HttpServletRequest request) {
         PendingConfirmation pending = confirmations.remove(request.getParameter(OAuth2ParameterNames.STATE))
                 .orElseThrow(() -> failure("confirmation_not_found", null));
+        String customerId = pending.customerId();
 
-        // 1. Ended by the customer who started it, not in somebody else's session
-        if (!pending.customerId().equals(customerId)) {
-            throw failure("wrong_customer", null);
-        }
-
-        // 2. itsme's answer: error, state, token exchange, ID token (decryption, signature, iss, aud, exp, acr), nonce
+        // 1. itsme's answer: error, state, token exchange, ID token (decryption, signature, iss, aud, exp, acr), nonce
         OidcIdToken idToken = itsmeAnswer(request, pending);
         String sub = idToken.getSubject();
 
@@ -129,7 +137,7 @@ public class ItsmeConfirmationService {
             throw failure("fraud_suspected", null);
         }
 
-        // 3. Approved by the right person: the itsme account linked to this customer now, not another one
+        // 2. Approved by the right person: the itsme account linked to this customer now, not another one
         Optional<String> linkedSub = links.findSubByCustomer(customerId);
         if (linkedSub.isEmpty() || !linkedSub.get().equals(sub)) {
             fraud.report(FraudSignal.WRONG_ITSME_ACCOUNT, customerId, sub);
@@ -139,10 +147,28 @@ public class ItsmeConfirmationService {
             throw failure("no_customer", null);
         }
 
-        return new ItsmeConfirmationResult(customerId, pending.operation().reference(),
-                pending.operation().text().value(),
+        return confirmations.saveApproved(pending.handoverVerifier(), new ItsmeConfirmationResult(customerId,
+                pending.operation().type(), pending.operation().reference(), pending.operation().text().value(),
                 properties.acr(),        // enforced by AcrValidator during ID token validation
-                clock.instant());
+                clock.instant()));
+    }
+
+    /**
+     * Step 3: the SPA redeems the code with its verifier, on an AJAX call carrying the customer's token. Returns the
+     * confirmed operation, to execute now, or throws an ItsmeConfirmationException: the operation must then not be
+     * executed. A wrong verifier or customer consumes the code: there is no second try.
+     * @param customerId the customer of the token on that call
+     */
+    public ItsmeConfirmationResult redeem(String code, String verifier, String customerId) {
+        JdbcConfirmationRequestRepository.ApprovedConfirmation approved = confirmations.removeApproved(code)
+                .filter(a -> ItsmeHandover.matches(a.handoverVerifier(), verifier))
+                .orElseThrow(() -> failure("invalid_handover", null));   // unknown, expired, used, other browser
+
+        // 3. Redeemed by the customer who started it, not with somebody else's token
+        if (!approved.result().customerId().equals(customerId)) {
+            throw failure("wrong_customer", null);
+        }
+        return approved.result();
     }
 
     private OidcIdToken itsmeAnswer(HttpServletRequest request, PendingConfirmation pending) {

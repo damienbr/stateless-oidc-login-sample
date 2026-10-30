@@ -7,5 +7,5 @@ import java.time.Instant;
  * from the callback URL, and it carries no itsme claim. itsme returns no proof of what was shown, so this record
  * (who, what, when, at which level) is the application's evidence; keep it in the audit trail of the operation.
  */
-public record ItsmeConfirmationResult(String customerId, String operationReference, String approvalText,
-                                      String authenticationLevel, Instant confirmedAt) {}
+public record ItsmeConfirmationResult(String customerId, String operationType, String operationReference,
+                                      String approvalText, String authenticationLevel, Instant confirmedAt) {}
