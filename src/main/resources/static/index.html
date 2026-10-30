@@ -3,9 +3,10 @@
   DEMO ONLY. Stands in for the application's single page application (SPA). README: "Hand-over" explains the three
   steps; docs/spa-handover.md is the guide for the SPA developer.
   - No cookie: the token from the hand-over is kept in sessionStorage and sent as "Authorization: Bearer".
-  - Before each itsme flow, a random verifier is kept in localStorage and sent in the BODY of the start request.
-    Redeeming the one-time code from the URL fragment requires the same verifier: it binds the end of the flow to
-    this browser.
+  - Before each itsme flow, a random browser code verifier is kept in localStorage, and only its S256 hash, the
+    browser code challenge, is sent at the start. Redeeming the one-time code from the URL fragment requires the
+    verifier itself: it binds the end of the flow to this browser. (Not PKCE's code_verifier: that one stays between
+    the backend and itsme.)
   - Server data is always written with textContent, never as HTML.
 -->
 <html lang="en">
@@ -26,9 +27,9 @@
 
 <section id="home" hidden>
   <p>Customer portal of a fictitious energy supplier.</p>
-  <!-- Step 1 of the login: a form POST, so that the verifier travels in the body, not in the URL -->
+  <!-- Step 1 of the login: a form POST to the backend, which sends the browser on to itsme -->
   <form method="post" action="/oauth2/authorization/itsme" id="login-form">
-    <input type="hidden" name="handover_verifier" id="login-verifier">
+    <input type="hidden" name="browser_code_challenge" id="login-challenge">
     <button type="submit">Log in with itsme</button>
   </form>
   <p><small>For customers whose itsme account is already linked to their VoltaHome account.</small></p>
@@ -53,7 +54,7 @@
 'use strict';
 
 const TOKEN = 'voltahome.token';                     // sessionStorage: this tab only, gone when the tab closes
-const VERIFIER = 'voltahome.handover-verifier';      // localStorage: itsme may bring the browser back in a new tab
+const VERIFIER = 'voltahome.browser-code-verifier';  // localStorage: itsme may bring the browser back in a new tab
 
 // README: "Error codes". Fixed messages only: the raw "error" parameter comes from the URL and is never displayed.
 const MESSAGES = {
@@ -79,15 +80,20 @@ const showError = code => show(MESSAGES[code] || 'An error occurred. Please try 
 function read(store, key) { try { return store.getItem(key); } catch (e) { return null; } }
 function write(store, key, value) { try { value === null ? store.removeItem(key) : store.setItem(key, value); } catch (e) { } }
 
-/** A new random verifier (256 bits), kept until the end of the flow. */
-function newVerifier() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const verifier = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const base64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+/**
+ * A new browser code verifier (256 random bits), kept until the end of the flow.
+ * Returns its browser code challenge, the S256 hash: the only part sent at the start.
+ */
+async function newBrowserCodeChallenge() {
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
   write(localStorage, VERIFIER, verifier);
-  return verifier;
+  return base64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
 }
 
-/** The verifier of this browser, used once. */
+/** The browser code verifier of this browser, used once. */
 function takeVerifier() {
   const verifier = read(localStorage, VERIFIER);
   write(localStorage, VERIFIER, null);
@@ -105,12 +111,16 @@ async function api(method, path, body) {
 
 // ---------------------------------------------------------------- login
 
-// Step 1: the form is submitted to the backend, which sends the browser to itsme
-$('login-form').addEventListener('submit', () => { $('login-verifier').value = newVerifier(); });
+// Step 1: compute the challenge first (it takes a moment), then submit the form
+$('login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  $('login-challenge').value = await newBrowserCodeChallenge();
+  event.target.submit();                             // submit() does not fire this listener again
+});
 
 // Step 3: the backend sent the browser back to "/#handover=<code>"
 async function redeemLogin(code) {
-  const { status, data } = await api('POST', '/itsme/login/handover', { handover: code, verifier: takeVerifier() });
+  const { status, data } = await api('POST', '/itsme/login/handover', { handover: code, browserCodeVerifier: takeVerifier() });
   if (status !== 200) { showError(data.error); return; }
   write(sessionStorage, TOKEN, data.accessToken);
 }
@@ -119,13 +129,14 @@ async function redeemLogin(code) {
 
 // Step 1: the API returns the itsme URL; the token stays in sessionStorage during the round trip
 $('confirm').addEventListener('click', async () => {
-  const { status, data } = await api('POST', '/api/confirmation/start', { handoverVerifier: newVerifier() });
+  const challenge = await newBrowserCodeChallenge();
+  const { status, data } = await api('POST', '/api/confirmation/start', { browserCodeChallenge: challenge });
   if (status === 200) { location.assign(data.redirect); } else { showError(data.error); }
 });
 
 // Step 3: the backend sent the browser back to "/#confirmation=<code>"
 async function redeemConfirmation(code) {
-  const { status, data } = await api('POST', '/api/confirmation/redeem', { handover: code, verifier: takeVerifier() });
+  const { status, data } = await api('POST', '/api/confirmation/redeem', { handover: code, browserCodeVerifier: takeVerifier() });
   if (status === 200) { show('Confirmed: ' + data.operation + '.', 'notice'); }
   else if (status === 401) { show('Your session has expired. Nothing was changed.', 'error'); }
   else { showError(data.error); }
