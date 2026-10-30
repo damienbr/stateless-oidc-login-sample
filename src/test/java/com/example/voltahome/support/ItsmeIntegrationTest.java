@@ -3,6 +3,7 @@ package com.example.voltahome.support;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.net.URLDecoder;
@@ -14,25 +15,28 @@ import java.util.Map;
 import java.util.function.UnaryOperator;
 
 import com.example.voltahome.demo.DemoConfirmedOperations;
-import com.example.voltahome.demo.DemoSession;
 import com.example.voltahome.fraud.FraudService;
 import com.example.voltahome.itsme.ItsmeKeys;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.nimbusds.jose.jwk.RSAKey;
-import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;   // Spring Boot 4 package
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.ResultMatcher;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Starts the application with H2 and a WireMock itsme. Each test starts from a clean state.
@@ -46,7 +50,13 @@ public abstract class ItsmeIntegrationTest {
 
     protected static final String CLIENT_ID = "test-client";
     protected static final String CALLBACK = "/login/oauth2/code/itsme";
-    protected static final String CONFIRMATION_CALLBACK = "/portal/confirmation/callback";
+    protected static final String CONFIRMATION_CALLBACK = "/itsme/confirmation/callback";
+    protected static final String LOGIN_HANDOVER = "/itsme/login/handover";
+
+    /** The random value the SPA keeps during an itsme flow (README: "Hand-over"). */
+    protected static final String VERIFIER = "verifier-of-the-browser-that-started-0123456789";
+    /** A valid verifier, but not the one sent at the start: the one another browser would hold. */
+    protected static final String ANOTHER_VERIFIER = "verifier-of-another-browser-0123456789abcdefghij";
 
     /**
      * One WireMock server for the whole test run. A JUnit extension per test class would restart it on a new port,
@@ -83,12 +93,14 @@ public abstract class ItsmeIntegrationTest {
     @Autowired protected MutableClock clock;
     @Autowired protected ItsmeKeys keys;
     @Autowired protected DemoConfirmedOperations confirmedOperations;
+    @Autowired protected ObjectMapper json;
 
     @BeforeEach
     void resetState() {
         jdbc.sql("DELETE FROM itsme_link").update();
         jdbc.sql("DELETE FROM itsme_authorization_request").update();
         jdbc.sql("DELETE FROM itsme_confirmation_request").update();
+        jdbc.sql("DELETE FROM itsme_handover").update();
         confirmedOperations.clear();
         fraud.clear();
         clock.reset();
@@ -99,18 +111,24 @@ public abstract class ItsmeIntegrationTest {
 
     // ------------------------------------------------------------------ helpers
 
-    /** Step 1: the user clicks "Log in with itsme". */
-    protected record StartedLogin(String location, String state, String nonce, String requestObject) {}
+    /** Step 1: the user clicks "Log in with itsme": a form POST carrying the SPA's verifier. */
+    protected record StartedLogin(String location, String state, String nonce, String requestObject,
+                                  MvcResult result) {}
 
     protected StartedLogin startLogin() throws Exception {
-        MvcResult result = mvc.perform(get("/oauth2/authorization/itsme"))
+        return startLogin(post("/oauth2/authorization/itsme").param("handover_verifier", VERIFIER));
+    }
+
+    /** A login started with another request than the SPA's form: the test changes that one thing. */
+    protected StartedLogin startLogin(MockHttpServletRequestBuilder start) throws Exception {
+        MvcResult result = mvc.perform(start)
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
         assertThat(result.getRequest().getSession(false)).as("no HttpSession").isNull();
         String location = result.getResponse().getRedirectedUrl();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(location).build().getQueryParams();
         return new StartedLogin(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")),
-                decode(query.getFirst("request")));
+                decode(query.getFirst("request")), result);
     }
 
     /** itsme redirects back with a code; the backend exchanges it and validates the ID token. */
@@ -125,11 +143,36 @@ public abstract class ItsmeIntegrationTest {
         return callback(started.state());
     }
 
-    /** After a successful login: the browser follows the redirect to the portal, with the cookie it received. */
-    protected ResultActions openPortal(MvcResult successfulLogin) throws Exception {
-        Cookie session = successfulLogin.getResponse().getCookie(DemoSession.COOKIE);
-        assertThat(session).as("demo session cookie").isNotNull();
-        return mvc.perform(get("/portal").cookie(session));
+    /** A successful login ends with a redirect to the SPA carrying only a one-time code in the fragment. */
+    protected static ResultMatcher redirectedToLoginHandover() {
+        return result -> assertThat(result.getResponse().getRedirectedUrl())
+                .matches("/#handover=[A-Za-z0-9_-]{43}");
+    }
+
+    /** The one-time code in the fragment of a redirect to the SPA (#handover=... or #confirmation=...). */
+    protected static String handoverCode(MvcResult redirect) {
+        String location = redirect.getResponse().getRedirectedUrl();
+        assertThat(location).as("redirect to the SPA").contains("#");
+        return location.substring(location.indexOf('=') + 1);
+    }
+
+    /** The SPA redeems the login hand-over code with a verifier. */
+    protected ResultActions redeemLogin(String code, String verifier) throws Exception {
+        return mvc.perform(post(LOGIN_HANDOVER).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("handover", code, "verifier", verifier))));
+    }
+
+    /** After a successful login: the SPA redeems the code and keeps the token it receives. */
+    protected String tokenAfter(MvcResult successfulLogin) throws Exception {
+        String body = redeemLogin(handoverCode(successfulLogin), VERIFIER)
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return json.readTree(body).get("accessToken").asString();
+    }
+
+    /** The SPA calls the protected portal API with its bearer token. */
+    protected ResultActions portal(String token) throws Exception {
+        return mvc.perform(get("/api/portal").header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
     }
 
     /** ID token as itsme sends it for the client's method. */

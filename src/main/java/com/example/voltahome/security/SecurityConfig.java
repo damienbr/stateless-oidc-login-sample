@@ -34,12 +34,15 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .securityContext(sc -> sc.securityContextRepository(new RequestAttributeSecurityContextRepository()))
             .requestCache(rc -> rc.requestCache(new NullRequestCache()))
-            // This chain serves no form: the itsme login is a GET redirect and a GET callback protected by "state".
-            // (The portal's confirmation form has its own chain, with CSRF on.) Keep your application's existing CSRF setup.
+            // No cookie is set or read anywhere (README: "Hand-over"), so a forged cross-site request carries no
+            // credential: there is nothing for a CSRF token to protect. The itsme callbacks are protected by "state",
+            // the hand-over by the one-time code and the SPA's verifier. Keep your application's existing CSRF setup.
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/", "/login-error", "/error").permitAll()
+                .requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()
                 .requestMatchers("/.well-known/jwks.json").permitAll()                 // itsme reads our public keys
+                .requestMatchers("/itsme/login/handover").permitAll()                  // code + verifier
+                .requestMatchers("/itsme/confirmation/callback").permitAll()           // "state"; executes nothing
                 .anyRequest().authenticated())
             .oauth2Login(oauth2 -> oauth2
                 .authorizationEndpoint(e -> e
@@ -50,7 +53,8 @@ public class SecurityConfig {
                 .authorizedClientRepository(new NoOpAuthorizedClientRepository())
                 .successHandler(successHandler)
                 .failureHandler(failureHandler));
-        // The application's own API authentication (its own JWT) is out of scope of the sample.
+        // The application's own API authentication (its own token, issued by LoginHandover) is out of scope of the
+        // sample; the demo stand-in is demo/DemoSecurityConfig.
         return http.build();
     }
 }

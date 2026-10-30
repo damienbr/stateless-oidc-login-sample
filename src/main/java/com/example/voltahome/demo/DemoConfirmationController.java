@@ -1,49 +1,41 @@
 package com.example.voltahome.demo;
 
-import java.net.URI;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import com.example.voltahome.itsme.ItsmeConfirmationException;
+import com.example.voltahome.itsme.ItsmeConfirmationResult;
 import com.example.voltahome.itsme.ItsmeConfirmationService;
 import com.example.voltahome.itsme.ItsmeFreeText;
 import com.example.voltahome.itsme.ItsmeOperation;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * DEMO ONLY. The portal side of the itsme confirmation (README: "Confirmation of an operation"): one fixed operation,
- * a button that starts the confirmation, and the callback that executes the operation once itsme confirmed it.
- * Everything is under /portal: only a logged-in customer reaches it (DemoSecurityConfig), and the customer comes from
- * the demo session, never from a request parameter.
+ * DEMO ONLY. The SPA's side of the itsme confirmation (README: "Confirmation of an operation", "Hand-over"): one
+ * fixed operation, step 1 (start) and step 3 (redeem, then execute). Step 2, the itsme callback, is
+ * itsme/ItsmeConfirmationCallbackController.
+ * Everything is under /api: only a request with a valid demo token reaches it (DemoSecurityConfig), and the customer
+ * comes from that token, never from a request parameter. Errors answer 400 with {"error": "<code>"}.
  */
 @RestController
-@RequestMapping("/portal/confirmation")
+@RequestMapping(value = "/api/confirmation", produces = MediaType.APPLICATION_JSON_VALUE)
 class DemoConfirmationController {
 
     static final String OPERATION = "advance-payment-85";
     static final String DESCRIPTION = "Set the monthly advance payment to EUR 85.00";
 
-    /** README: "Confirmation of an operation". Fixed messages only; the raw "error" parameter is never displayed. */
-    private static final Map<String, String> MESSAGES = Map.of(
-            "access_denied", "The operation was refused in itsme. Nothing was changed.",
-            "confirmation_not_found", "This confirmation has expired or was already used. Nothing was changed.",
-            "wrong_customer", "This confirmation was not started in your session. Nothing was changed.",
-            "wrong_person", "The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.",
-            "fraud_suspected", "For your security, this operation has been blocked. Never share your codes over the phone.",
-            "not_linked", "No itsme account is linked to your VoltaHome account.",
-            "no_customer", "Your VoltaHome account is no longer active.",
-            "confirmation_unavailable", "Confirmation with itsme is not available in this configuration.");
-    private static final String DEFAULT_MESSAGE = "The operation could not be confirmed. Nothing was changed.";
+    /** The random value the SPA keeps until step 3; in the body, never in a URL. */
+    record StartRequest(String handoverVerifier) {}
+
+    /** The one-time code from the URL fragment, and the verifier. */
+    record RedeemRequest(String handover, String verifier) {}
 
     private final ItsmeConfirmationService confirmation;
     private final DemoConfirmedOperations confirmedOperations;
@@ -57,34 +49,30 @@ class DemoConfirmationController {
         return OPERATION.equals(operationReference) ? DESCRIPTION : operationReference;
     }
 
-    /** The button: a POST with a CSRF token. The operation and its text are decided here, on the server. */
-    @PostMapping
-    ResponseEntity<Void> start(HttpServletRequest request,
-                               @AuthenticationPrincipal DemoSession.LoggedInCustomer customer) {
+    /** Step 1: the "Confirm with itsme" button. The operation and its text are decided here, on the server. */
+    @PostMapping(value = "/start", consumes = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<Map<String, String>> start(HttpServletRequest request, @RequestBody StartRequest body,
+                                              @AuthenticationPrincipal Jwt token) {
         try {
-            return redirect(confirmation.start(request, customer.customerId(),
-                    new ItsmeOperation(OPERATION, approvalText(customer.customerId()))));
+            String customerId = token.getSubject();
+            return ResponseEntity.ok(Map.of("redirect", confirmation.start(request, customerId,
+                    new ItsmeOperation(OPERATION, approvalText(customerId)), body.handoverVerifier()).toString()));
         } catch (ItsmeConfirmationException e) {
-            return error(e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.code()));
         }
     }
 
-    /** itsme redirects the browser here. The operation is executed only if the confirmation is accepted. */
-    @GetMapping("/callback")
-    ResponseEntity<Void> callback(HttpServletRequest request,
-                                  @AuthenticationPrincipal DemoSession.LoggedInCustomer customer) {
+    /** Step 3: the SPA redeems the approval. The operation is executed only if the redemption is accepted. */
+    @PostMapping(value = "/redeem", consumes = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<Map<String, String>> redeem(@RequestBody RedeemRequest body, @AuthenticationPrincipal Jwt token) {
         try {
-            confirmedOperations.record(confirmation.complete(request, customer.customerId()));
-            return redirect(URI.create("/portal"));
+            ItsmeConfirmationResult confirmed = confirmation.redeem(body.handover(), body.verifier(),
+                    token.getSubject());
+            confirmedOperations.record(confirmed);           // stands in for executing the operation
+            return ResponseEntity.ok(Map.of("operation", describe(confirmed.operationReference())));
         } catch (ItsmeConfirmationException e) {
-            return error(e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.code()));
         }
-    }
-
-    @GetMapping(value = "/error", produces = MediaType.TEXT_HTML_VALUE)
-    String errorPage(@RequestParam(defaultValue = "") String error) {
-        String message = MESSAGES.getOrDefault(error, DEFAULT_MESSAGE);   // fixed text only
-        return DemoController.page("<p class='error'>" + message + "</p><p><a href='/portal'>Back to the portal</a></p>");
     }
 
     /** What the customer reads in the itsme app. */
@@ -95,14 +83,5 @@ class DemoConfirmationController {
                 .text("New monthly advance payment: ").bold("EUR 85.00").lineBreak()
                 .text("From the next advance invoice.")
                 .build();
-    }
-
-    private static ResponseEntity<Void> error(ItsmeConfirmationException e) {
-        return redirect(URI.create("/portal/confirmation/error?error="
-                + URLEncoder.encode(e.code(), StandardCharsets.UTF_8)));
-    }
-
-    private static ResponseEntity<Void> redirect(URI location) {
-        return ResponseEntity.status(HttpStatus.FOUND).location(location).build();
     }
 }
