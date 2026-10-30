@@ -1,33 +1,37 @@
 package com.example.voltahome.demo;
 
-import java.io.IOException;
-
+import com.example.voltahome.customer.Customer;
+import com.example.voltahome.customer.CustomerRepository;
 import com.example.voltahome.itsme.ItsmeLoginResult;
 import com.example.voltahome.itsme.LoginHandover;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
 /**
  * DEMO ONLY. Stands in for the application's token management, which is out of scope.
- * Like a real implementation, it issues the application's own credential (here, the demo session cookie) and
- * redirects to the portal. The callback is a browser navigation: the answer is a redirect, and the credential
- * travels in a cookie, never in the URL.
+ * Like a real implementation, it issues the application's own credential (here, the demo token) and returns it in the
+ * JSON answer to the SPA, with the customer's own data. The token never travels in a URL or a cookie.
  */
 @Component
 class DemoLoginHandover implements LoginHandover {
 
-    private final DemoSession session;
+    /** What the SPA receives: our token and our customer data, no itsme claim. */
+    record LoginResponse(String accessToken, String tokenType, long expiresIn, String customerId,
+                         String displayName) {}
 
-    DemoLoginHandover(DemoSession session) {
-        this.session = session;
+    private final DemoToken token;
+    private final CustomerRepository customers;
+
+    DemoLoginHandover(DemoToken token, CustomerRepository customers) {
+        this.token = token;
+        this.customers = customers;
     }
 
     @Override
-    public void complete(HttpServletRequest request, HttpServletResponse response, ItsmeLoginResult result)
-            throws IOException {
-        response.addHeader(HttpHeaders.SET_COOKIE, session.issue(result).toString());
-        response.sendRedirect("/portal");
+    public Object complete(ItsmeLoginResult result) {
+        String displayName = customers.findActiveById(result.customerId())     // our customer data, not itsme's
+                .map(Customer::displayName)
+                .orElse(result.customerId());
+        return new LoginResponse(token.issue(result), "Bearer", DemoToken.TTL.toSeconds(), result.customerId(),
+                displayName);
     }
 }
