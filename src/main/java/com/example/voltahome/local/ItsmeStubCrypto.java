@@ -14,6 +14,7 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.Payload;
 import com.nimbusds.jose.crypto.DirectEncrypter;
+import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jose.crypto.RSAEncrypter;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.JWK;
@@ -35,7 +36,8 @@ import com.nimbusds.jwt.proc.DefaultJWTProcessor;
  * itsme's own key pairs, ID tokens signed by itsme (RS256) and encrypted for the client, and the checks itsme
  * makes on what the client sends (Request Object, client assertion). ID token encryption depends on the client's
  * method: RSA-OAEP-256 + A128CBC-HS256 with the client's public key (key pairs), or dir + A256GCM with a key
- * derived from the client secret.
+ * derived from the client secret. With the client secret method, itsme signs with RS256 or, if the client was
+ * registered so, with HS256 and the client secret.
  * Used by the itsme stub (local profile) and by the WireMock tests. It is not itsme.
  */
 public final class ItsmeStubCrypto {
@@ -81,6 +83,20 @@ public final class ItsmeStubCrypto {
                     new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(signingKey.getKeyID()).build(), claims);
             signed.sign(new RSASSASigner(signingKey));
             return encryptWithSecret(new Payload(signed), clientSecret, true);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Client secret method registered with HS256: signed with the client secret itself (OIDC Core §10.1, no
+     * derivation), then encrypted with dir + A256GCM. itsme uses the same secret for both; the tests change one.
+     */
+    public String hs256SignedAndEncryptedWithSecret(JWTClaimsSet claims, String signingSecret, String encryptionSecret) {
+        try {
+            SignedJWT signed = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+            signed.sign(new MACSigner(signingSecret.getBytes(StandardCharsets.UTF_8)));
+            return encryptWithSecret(new Payload(signed), encryptionSecret, true);
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

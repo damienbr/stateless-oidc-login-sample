@@ -158,7 +158,7 @@ The containers use `mvn` rather than `./mvnw`. The wrapper's pinned checksum is 
 | Protocol | OpenID Connect Authorization Code flow, itsme API v2 |
 | Client authentication | Both itsme methods, one switch: key pairs (`private_key_jwt`) or client secret — see the next section |
 | Authorization request | PKCE (S256); with key pairs, a Request Object signed by us and encrypted for itsme |
-| ID token | Signed (RS256) by itsme, encrypted for us (method-dependent) |
+| ID token | Signed (RS256) by itsme, encrypted for us (method-dependent); HS256 accepted only for a client secret registration that cannot use RS256 |
 | Scope | Authentication only, no identification |
 | Customer mapping | itsme `sub`, already linked to the customer; an unknown `sub` is refused |
 | Data requested from itsme | No identity attribute; the `ongoing_call` fraud signal only |
@@ -219,13 +219,20 @@ itsme offers two ways for the application to authenticate. The sample supports b
 | Token request | Client assertion signed with our private key | `client_id` + `client_secret` in the body (`client_secret_post`) |
 | Authorization parameters | Inside a Request Object, signed by us, encrypted for itsme | In the URL: visible and editable in the browser |
 | ID token encryption | RSA-OAEP-256 + A128CBC-HS256, with our public key | dir + A256GCM, with a key derived from the secret (OIDC Core §10.2, *to be confirmed in E2E*) |
-| ID token signature | RS256, itsme's key | RS256, itsme's key |
+| ID token signature | RS256, itsme's key | RS256, itsme's key (default); or HS256, the client secret itself (OIDC Core §10.1), if the itsme registration says so |
 | Protection of `acr_values` | The Request Object, and the `acr` check on the ID token | The `acr` check on the ID token only |
 | If the secret leaks | No shared secret | Intercepted codes can be exchanged, captured ID tokens decrypted |
 | Infrastructure | Public `/.well-known/jwks.json` (OV/EV certificate, < 1 s), key rotation | Secret in a vault, rotation arranged with itsme (restart needed) |
-| Code | `ItsmeKeys`, `JwksController`, `ItsmeRequestObjectFactory` | `ItsmeCrypto.idTokenDecryptionKey` |
+| Code | `ItsmeKeys`, `JwksController`, `ItsmeRequestObjectFactory` | `ItsmeCrypto.idTokenDecryptionKey`, `ItsmeCrypto.idTokenSignatureKey` (HS256) |
 
 Choose key pairs when you can; choose the client secret when the inbound route for the public keys is not possible. In both cases, the ID token must be signed inside the encryption (`requireNestedSignedJwt`): encryption alone proves nothing about the origin.
+
+**HS256 signature (client secret only).** At registration, itsme lets a client secret client choose how the ID token is signed: RS256 with itsme's key, or HS256 with the client secret. Choose RS256 whenever you can. If the registration is HS256 and cannot be changed, set `itsme.id-token-signature: HS256`:
+
+- the signature is checked with the UTF-8 bytes of the client secret, used as they are (OIDC Core §10.1; no hash, unlike the decryption key), through Nimbus `SingleKeyJWSKeySelector`;
+- exactly one algorithm is accepted, the configured one: with `HS256`, an RS256 token is refused, and with `RS256` (default), an HS256 token is refused. Accepting both would let a token pass with the wrong kind of key;
+- startup fails if `HS256` is set with key pairs, or with a client secret shorter than 32 bytes (256 bits, RFC 7518 §3.2);
+- the cost: anyone who holds the client secret can now make a valid ID token, not only itsme. What still proves the origin is that the token comes straight from itsme's token endpoint over TLS, in exchange for a single-use code bound to PKCE (OIDC Core §3.1.3.7 accepts TLS as the proof of origin in this case). A leaked secret becomes worse than with RS256, so keep it in the vault and rotate it as soon as a leak is suspected.
 
 ---
 
@@ -282,6 +289,8 @@ src/test/java/com/example/voltahome
 ├── support/TestClockConfig.java             makes MutableClock the application clock in tests
 ├── itsme/ItsmeLoginFlowTest.java            protocol scenarios, key pairs
 ├── itsme/ClientSecretLoginFlowTest.java     what differs with a client secret
+├── itsme/ClientSecretHs256LoginFlowTest.java  client secret with an HS256 ID token signature
+├── itsme/ItsmeClientConfigTest.java         HS256 configurations refused at startup
 ├── itsme/ItsmeCryptoTest.java               nested signed JWT check
 ├── itsme/ItsmeKeysTest.java                 ephemeral keys refused outside localhost
 ├── itsme/ItsmeConfirmationFlowTest.java     confirmation scenarios: the right person, the ID token, the state
@@ -346,6 +355,7 @@ Key pairs method only. The application owns two RSA key pairs (itsme supports RS
 | `client-id`, `service-code` | Issued by itsme at onboarding |
 | `client-authentication` | `private-key-jwt` (default) or `client-secret` |
 | `client-secret` | Client secret method only; injected from a vault |
+| `id-token-signature` | Client secret method only: `RS256` (default) or `HS256`, as registered at itsme; see [Two client authentication methods](#two-client-authentication-methods) |
 | `redirect-uri` | Absolute URL, identical to the value registered at itsme |
 | `acr` | `http://itsme.services/v2/claim/acr_advanced` (itsme code required) |
 | `endpoints.issuer` | Copy the exact value from the discovery document of each environment |
@@ -390,12 +400,13 @@ Spring's default ID token decoder cannot decrypt JWE. `ItsmeClientConfig.idToken
 | Encrypted and nested signed JWT (`cty: JWT`) | `ItsmeCrypto.requireNestedSignedJwt` |
 | Decryption: RSA-OAEP-256 / A128CBC-HS256 with our private key, or dir / A256GCM with the key derived from the secret | Nimbus `JWEDecryptionKeySelector` |
 | Signature RS256 with itsme's JWKS | Nimbus `JWSVerificationKeySelector` |
+| Or, client secret with `id-token-signature: HS256` only: signature HS256 with the client secret | Nimbus `SingleKeyJWSKeySelector` |
 | `iss`, `aud`, `iat` | Spring `OidcIdTokenValidator` |
 | `exp` (60 s skew) | Spring `JwtTimestampValidator` |
 | `nonce` | Spring (built in) |
 | `acr` | `AcrValidator` — *presence of the claim to be confirmed in E2E* |
 
-Why the nested check matters: with key pairs, our encryption key is **public**, so anyone can encrypt a token for us; with a client secret, anyone holding the secret can. Only itsme's signature proves where the token comes from.
+Why the nested check matters: with key pairs, our encryption key is **public**, so anyone can encrypt a token for us; with a client secret, anyone holding the secret can. Only itsme's signature proves where the token comes from. With an HS256 signature, the secret can sign as well: the check still refuses an unsigned token, and the origin rests on the token endpoint (see [Two client authentication methods](#two-client-authentication-methods)).
 
 ---
 
@@ -558,7 +569,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 | # | Rule | Why | Guarded by |
 |---|---|---|---|
 | 1 | **No hand-written cryptography.** Only Nimbus and Spring Security calls, with explicit algorithms. The one exception is the key derivation of the client secret method (`ItsmeCrypto.idTokenDecryptionKey`, OIDC Core §10.2), and its deliberately independent copy in `ItsmeStubCrypto`, which must not call production code: it is the reference the tests check us against. | Crypto mistakes do not show in a demo; they show in an incident. | The `IdTokenValidation` tests; `tokenEncryptedWithAnotherSecretIsRejected` |
-| 2 | **The ID token must be signed inside the encryption** (`ItsmeCrypto.requireNestedSignedJwt`). | Our encryption key is public (key pairs) or shared (client secret): anyone can encrypt a token for us. Only itsme's signature proves where it comes from. | `encryptedButUnsignedTokenIsRejected` (both methods), `plainJwsIsNotAcceptedAsIdToken` |
+| 2 | **The ID token must be signed inside the encryption** (`ItsmeCrypto.requireNestedSignedJwt`), with exactly one configured algorithm: RS256 with itsme's key, or, for a client secret registered so at itsme, HS256 with the secret. | Our encryption key is public (key pairs) or shared (client secret): anyone can encrypt a token for us. Only the signature proves where it comes from; accepting two algorithms at once would let a token pass with the wrong kind of key. | `encryptedButUnsignedTokenIsRejected` (all three test classes), `plainJwsIsNotAcceptedAsIdToken`, `hs256TokenIsRejectedWhenRs256IsConfigured`, `rs256TokenIsRejectedWhenHs256IsConfigured`, `tokenSignedWithAnotherSecretIsRejected`, `hs256IsRefusedWithKeyPairs`, `hs256IsRefusedWithAClientSecretShorterThan256Bits` |
 | 3 | **Keep `AcrValidator`.** If itsme E2E shows that `acr` is not sent, report it; do not remove the check. | Without it, a fingerprint approval (or, with the client secret, an edited URL) passes as an itsme-code approval. | `missingAcrIsRejected`, `basicAcrIsRejected`, `withoutRequestObjectTheAcrCheckOnTheResponseIsTheProtection` |
 | 4 | **Find the customer by `sub` only.** Never by itsme's `email` or any other itsme claim. | itsme does not verify the email: anyone can put a victim's address in their own itsme account. | `unknownItsmeAccountIsNotIdentifiedByTheEmailItsmeSends` |
 | 5 | **Authentication only.** Request no identity claim; refuse an unknown `sub`; never write `itsme_link` during the login. | See [Authentication, not identification](#authentication-not-identification). | `authorizationRequestAsksForFraudSignalsOnlyNoIdentityClaim` (both methods), `confirmationRequestAsksForTheWysiwysTemplateAndFraudSignalsOnlyNoIdentityClaim`, `unknownItsmeAccountIsRejected` |
@@ -589,7 +600,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 
 - The ID token contains the `acr` claim (otherwise `AcrValidator` rejects every login). The itsme documentation does not say that it does.
 - Key pairs: ID token encrypted RSA-OAEP-256 / A128CBC-HS256, containing a JWS signed RS256. The documentation does not fix these values, and the discovery document also allows RSA-OAEP and A256GCM. itsme accepts the Request Object as built here.
-- Client secret: ID token encrypted dir / A256GCM with the key derived from the secret as in OIDC Core §10.2, containing a JWS signed RS256. With this method itsme lets you choose RS256 or HS256 at registration: choose **RS256**, the only signature the sample accepts.
+- Client secret: ID token encrypted dir / A256GCM with the key derived from the secret as in OIDC Core §10.2, containing a JWS signed RS256. With this method itsme lets you choose RS256 or HS256 at registration: choose **RS256** when you can. If the registration is HS256, set `itsme.id-token-signature: HS256` and confirm that itsme signs with the client secret's bytes as they are (OIDC Core §10.1).
 - Client secret: clients onboarded before 25 June 2025 use other endpoints (`https://oidc.[e2e/prd].itsme.services/clientsecret-oidc/csapi/v0.1/...`), and the documentation's example ID token shows an `iss` on the `oidc.` host. Copy the endpoints and the `issuer` from the discovery document of your own client.
 - Exact `issuer` and `jwks_uri` values in the discovery document (in PRD, `jwks_uri` is `https://idp.prd.itsme.services/v2/jwkSet`).
 - Confirmation: itsme accepts the `free_text` template under the `id_token` member of `claims` (the documentation does not say `id_token` or `userinfo`), renders `<b>` and `<br>` as expected, and returns `acr` in the ID token. Check how a refusal in the app is reported (expected: `access_denied`).

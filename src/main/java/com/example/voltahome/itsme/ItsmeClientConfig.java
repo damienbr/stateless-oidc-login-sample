@@ -18,6 +18,7 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.JWEDecryptionKeySelector;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
+import com.nimbusds.jose.proc.SingleKeyJWSKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
@@ -78,10 +79,16 @@ public class ItsmeClientConfig {
         ClientRegistration.Builder itsme = ClientRegistration.withRegistrationId(registrationId)
                 .clientId(p.clientId());
         if (p.usesKeyPairs()) {
+            if (p.idTokenSignedWithSecret()) {
+                throw new IllegalStateException("itsme.id-token-signature=HS256 requires itsme.client-authentication=client-secret");
+            }
             itsme.clientAuthenticationMethod(ClientAuthenticationMethod.PRIVATE_KEY_JWT);
         } else {
             if (p.clientSecret() == null || p.clientSecret().isBlank()) {
                 throw new IllegalStateException("itsme.client-secret is required with itsme.client-authentication=client-secret");
+            }
+            if (p.idTokenSignedWithSecret()) {
+                ItsmeCrypto.idTokenSignatureKey(p.clientSecret());   // refuses a secret too short for HS256, now
             }
             itsme.clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)   // client_id + client_secret in the body
                     .clientSecret(p.clientSecret());
@@ -170,7 +177,9 @@ public class ItsmeClientConfig {
     /**
      * README: "ID token validation". Spring's default decoder cannot decrypt JWE tokens. Expected formats:
      * - key pairs: JWE (RSA-OAEP-256, A128CBC-HS256, our public key) containing a JWS (RS256, itsme's key);
-     * - client secret: JWE (dir, A256GCM, key derived from the secret) containing a JWS (RS256, itsme's key).
+     * - client secret: JWE (dir, A256GCM, key derived from the secret) containing a JWS (RS256, itsme's key),
+     *   or, only with itsme.id-token-signature=HS256, a JWS (HS256, the client secret itself).
+     * Exactly one signature algorithm is accepted, never both: README: "Two client authentication methods".
      */
     @Bean
     JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory(ItsmeProperties properties, ItsmeKeys keys,
@@ -187,8 +196,13 @@ public class ItsmeClientConfig {
                         JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
                         new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
             }
-            processor.setJWSKeySelector(new JWSVerificationKeySelector<>(            // 2. verify itsme's signature
-                    JWSAlgorithm.RS256, itsmeJwkSource));
+            if (properties.idTokenSignedWithSecret()) {
+                processor.setJWSKeySelector(new SingleKeyJWSKeySelector<>(           // 2. verify the HMAC (client secret)
+                        JWSAlgorithm.HS256, ItsmeCrypto.idTokenSignatureKey(properties.clientSecret())));
+            } else {
+                processor.setJWSKeySelector(new JWSVerificationKeySelector<>(        // 2. verify itsme's signature
+                        JWSAlgorithm.RS256, itsmeJwkSource));
+            }
             processor.setJWTClaimsSetVerifier((claims, context) -> { });             // validated by Spring below
 
             NimbusJwtDecoder nimbus = new NimbusJwtDecoder(processor);

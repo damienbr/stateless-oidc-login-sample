@@ -32,7 +32,7 @@ import tools.jackson.databind.ObjectMapper;
  */
 class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
 
-    static final String CLIENT_SECRET = "test-client-secret-0123456789";
+    static final String CLIENT_SECRET = "test-client-secret-0123456789abcdef";
 
     @DynamicPropertySource
     static void clientSecretMethod(DynamicPropertyRegistry registry) {
@@ -98,6 +98,12 @@ class ClientSecretLoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void tokenEncryptedWithAnotherSecretIsRejected() throws Exception {
         login(t -> t.encryptedWithSecret("another-secret")).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
+    }
+
+    @Test
+    void hs256TokenIsRejectedWhenRs256IsConfigured() throws Exception {
+        // Default itsme.id-token-signature=RS256: an HMAC made with the client secret is not accepted
+        login(t -> t.signedWithSecret(CLIENT_SECRET)).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
     }
 
     @Test

@@ -13,6 +13,7 @@ public record ItsmeProperties(
         String clientId,
         ClientAuthentication clientAuthentication,
         String clientSecret,
+        IdTokenSignature idTokenSignature,
         String serviceCode,
         String redirectUri,
         String acr,
@@ -30,6 +31,19 @@ public record ItsmeProperties(
 
     public boolean usesKeyPairs() {
         return clientAuthentication != ClientAuthentication.CLIENT_SECRET;
+    }
+
+    /**
+     * Client secret method only: how itsme signs the ID token, as chosen when the client is registered at itsme.
+     * README: "Two client authentication methods". RS256 (default, recommended): itsme's private key, verified with
+     * itsme's JWKS. HS256: an HMAC made with the client secret itself (OIDC Core §10.1); anyone who holds the secret
+     * can make one, so use it only when the itsme registration cannot be changed to RS256.
+     */
+    public enum IdTokenSignature { RS256, HS256 }
+
+    /** True only when HS256 is configured explicitly; anything else means RS256. */
+    public boolean idTokenSignedWithSecret() {
+        return idTokenSignature == IdTokenSignature.HS256;
     }
 
     public record Endpoints(String issuer, String authorizationUri, String tokenUri,
@@ -62,6 +76,7 @@ public record ItsmeProperties(
     @Override
     public String toString() {
         return "ItsmeProperties[clientId=" + clientId + ", clientAuthentication=" + clientAuthentication
+                + ", idTokenSignature=" + idTokenSignature
                 + ", serviceCode=" + serviceCode + ", confirmation=" + confirmation + ", endpoints=" + endpoints + ", clientSecret=***, keystorePassword=***]";
     }
 }

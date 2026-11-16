@@ -130,6 +130,7 @@ itsme also offers a simpler method: a shared secret instead of key pairs. Some t
 - **No Request Object:** `acr_values` and `claims` travel in the URL, where anyone can edit them.
 - **ID token decryption:** `dir` and `A256GCM`, with a key derived from the secret. The itsme pages do not say how; the OpenID Connect specification (§10.2) does: the SHA-256 hash of the secret. Confirm it in the itsme test environment on day one.
 - **The nested check matters just as much:** anyone holding the secret can encrypt a token, so only itsme's signature proves the origin.
+- **If your registration signs with HS256:** itsme lets a client secret client choose RS256 or HS256. Prefer RS256. If HS256 cannot be changed, set `itsme.id-token-signature=HS256`: the decoder then checks an HMAC made with the secret's bytes as they are (OIDC Core §10.1), and only that algorithm. The cost: whoever holds the secret can also sign, so the proof of origin rests on the token coming straight from itsme's token endpoint over TLS.
 
 The trade-off is real. If the secret leaks, an intercepted authorization code can be exchanged and captured ID tokens can be decrypted. With key pairs, there is no shared secret to leak. Choose key pairs when you can. The README compares both in [Two client authentication methods](../README.md#two-client-authentication-methods).
 
@@ -307,7 +308,7 @@ The sample is a reference, not a finished product. Before real customers use it,
 **Confirm in the itsme test environment.** The README keeps the full list in [Points to confirm in itsme E2E](../README.md#points-to-confirm-in-itsme-e2e):
 
 - The ID token contains the `acr` claim. The itsme documentation does not promise it.
-- The ID token format: encrypted with `RSA-OAEP-256` and `A128CBC-HS256`, signed with `RS256`. With a client secret: `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes. itsme lets you choose an RS256 or HS256 signature for this method: choose RS256, the only one the sample accepts.
+- The ID token format: encrypted with `RSA-OAEP-256` and `A128CBC-HS256`, signed with `RS256`. With a client secret: `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes. itsme lets you choose an RS256 or HS256 signature for this method: choose RS256 when you can; with HS256, set `itsme.id-token-signature=HS256` and confirm that itsme signs with the secret's bytes as they are.
 - itsme accepts the Request Object as the sample builds it.
 - The exact `issuer` and `jwks_uri` values in each environment's discovery document.
 

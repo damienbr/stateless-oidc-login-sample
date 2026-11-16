@@ -75,6 +75,8 @@ public class ItsmeDiscoveryCheck {
             requireSupported(mismatches, d, "token_endpoint_auth_methods_supported", "client_secret_post");
             requireSupported(mismatches, d, "id_token_encryption_alg_values_supported", "dir");
             requireSupported(mismatches, d, "id_token_encryption_enc_values_supported", "A256GCM");
+            requireSupported(mismatches, d, "id_token_signing_alg_values_supported",
+                    properties.idTokenSignedWithSecret() ? "HS256" : "RS256");
         }
 
         if (mismatches.isEmpty()) {

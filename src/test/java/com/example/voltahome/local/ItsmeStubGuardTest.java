@@ -13,7 +13,7 @@ class ItsmeStubGuardTest {
     @Test
     void itsmeStubIsRefusedWithARealItsmeEndpoint() {
         ItsmeProperties properties = new ItsmeProperties("demo-client", ItsmeProperties.ClientAuthentication.PRIVATE_KEY_JWT,
-                null, "VOLTAHOME_LOGIN", "https://portal.voltahome.example/login/oauth2/code/itsme",
+                null, null, "VOLTAHOME_LOGIN", "https://portal.voltahome.example/login/oauth2/code/itsme",
                 "http://itsme.services/v2/claim/acr_advanced",
                 new ItsmeProperties.Endpoints("https://idp.e2e.itsme.services/v2", null, null, null, null),
                 new ItsmeProperties.ProxySettings("", 0),

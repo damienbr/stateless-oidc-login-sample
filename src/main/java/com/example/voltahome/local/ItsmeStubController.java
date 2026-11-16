@@ -88,6 +88,7 @@ class ItsmeStubController {
         d.put("token_endpoint_auth_methods_supported", List.of("private_key_jwt", "client_secret_post"));
         d.put("id_token_encryption_alg_values_supported", List.of("RSA-OAEP-256", "dir"));
         d.put("id_token_encryption_enc_values_supported", List.of("A128CBC-HS256", "A256GCM"));
+        d.put("id_token_signing_alg_values_supported", List.of("RS256", "HS256"));
         return d;
     }
 
@@ -211,7 +212,9 @@ class ItsmeStubController {
             String idToken = properties.usesKeyPairs()
                     ? crypto.signedAndEncrypted(claims,
                             ItsmeStubCrypto.encryptionKeyOf(JWKSet.load(URI.create(clientJwksUri).toURL())))
-                    : crypto.signedAndEncryptedWithSecret(claims, properties.clientSecret());
+                    : properties.idTokenSignedWithSecret()
+                            ? crypto.hs256SignedAndEncryptedWithSecret(claims, properties.clientSecret(), properties.clientSecret())
+                            : crypto.signedAndEncryptedWithSecret(claims, properties.clientSecret());
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("access_token", "stub-access-token-" + randomValue());
             body.put("token_type", "Bearer");

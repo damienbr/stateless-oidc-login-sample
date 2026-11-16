@@ -215,7 +215,7 @@ Spring asks this factory "give me the decoder for the ID tokens of this provider
 
 **`JwtDecoder`, `NimbusJwtDecoder`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
-A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (with our private key, or with the key derived from the client secret), then verify itsme's signature with itsme's public keys. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
+A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (with our private key, or with the key derived from the client secret), then verify itsme's signature with itsme's public keys (RS256). For a client secret registered at itsme with HS256 (`itsme.id-token-signature: HS256`), step two checks an HMAC made with the client secret instead, through Nimbus `SingleKeyJWSKeySelector`; only one of the two algorithms is ever accepted. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
 
 **`BadJwtException`** (Spring) — *file: `itsme/ItsmeCrypto.java`*
 

@@ -16,6 +16,7 @@ itsme:
   client-id: ${ITSME_CLIENT_ID:demo-client}
   client-authentication: private-key-jwt                   # or client-secret (README "Two client authentication methods")
   client-secret: ${ITSME_CLIENT_SECRET:}                    # client-secret method only; injected from a vault
+  id-token-signature: RS256                                 # client-secret method only: RS256, or HS256 if the itsme registration says so
   service-code: ${ITSME_SERVICE_CODE:VOLTAHOME_LOGIN}
   redirect-uri: ${ITSME_REDIRECT_URI:https://portal.voltahome.example/login/oauth2/code/itsme}
   acr: http://itsme.services/v2/claim/acr_advanced

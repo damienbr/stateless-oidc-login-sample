@@ -51,7 +51,8 @@ public final class ItsmeWireMock {
                   "jwks_uri": "%1$s/jwks",
                   "token_endpoint_auth_methods_supported": ["private_key_jwt", "client_secret_post"],
                   "id_token_encryption_alg_values_supported": ["RSA-OAEP-256", "dir"],
-                  "id_token_encryption_enc_values_supported": ["A128CBC-HS256", "A256GCM"]
+                  "id_token_encryption_enc_values_supported": ["A128CBC-HS256", "A256GCM"],
+                  "id_token_signing_alg_values_supported": ["RS256", "HS256"]
                 }
                 """.formatted(wm.baseUrl() + "/v2");
         wm.stubFor(get("/v2/.well-known/openid-configuration").willReturn(okJson(body)));
@@ -106,6 +107,7 @@ public final class ItsmeWireMock {
         private RSAKey recipient;
         private String secret;
         private ItsmeStubCrypto signer = crypto;
+        private String hs256Secret;
 
         private IdTokenBuilder(String issuer, String nonce, RSAKey clientEncryptionKey, String clientSecret) {
             this.issuer = issuer;
@@ -129,7 +131,11 @@ public final class ItsmeWireMock {
         /** Encrypt with a key derived from another secret than the application's. */
         public IdTokenBuilder encryptedWithSecret(String other) { this.secret = other; this.recipient = null; return this; }
         /** Sign with keys that are not the ones itsme publishes. */
-        public IdTokenBuilder signedBy(ItsmeStubCrypto other) { this.signer = other; return this; }
+        public IdTokenBuilder signedBy(ItsmeStubCrypto other) { this.signer = other; this.hs256Secret = null; return this; }
+        /** Client secret method: sign with HS256 and this secret instead of itsme's RSA key. */
+        public IdTokenBuilder signedWithSecret(String value) { this.hs256Secret = value; return this; }
+        /** Sign with itsme's RSA key (RS256), the default. */
+        public IdTokenBuilder signedWithItsmeKey() { this.signer = crypto; this.hs256Secret = null; return this; }
 
         /** null removes the claim. */
         public IdTokenBuilder claim(String name, Object value) {
@@ -143,6 +149,9 @@ public final class ItsmeWireMock {
 
         /** Expected itsme format: signed by itsme, then encrypted for the application. */
         public String build() {
+            if (secret != null && hs256Secret != null) {
+                return crypto.hs256SignedAndEncryptedWithSecret(claimsSet(), hs256Secret, secret);
+            }
             return secret != null
                     ? signer.signedAndEncryptedWithSecret(claimsSet(), secret)
                     : signer.signedAndEncrypted(claimsSet(), recipient);
