@@ -8,6 +8,8 @@
     verifier itself: it binds the end of the flow to this browser. (Not PKCE's code_verifier: that one stays between
     the backend and itsme.)
   - Server data is always written with textContent, never as HTML.
+  - After a confirmation, the SPA reloads the confirmed record from the API, by the type and reference the redemption
+    returns. Nothing about the order or offer is kept in the browser during the itsme round trip.
 -->
 <html lang="en">
 <head>
@@ -42,10 +44,10 @@
     <tr><th>Authentication level</th><td id="level"></td></tr>
     <tr><th>Token expires at</th><td id="expires-at"></td></tr>
   </table>
-  <h2>Monthly advance payment</h2>
-  <p><span id="operation"></span>. You approve this change in the itsme app.</p>
-  <p id="confirm-row"><button type="button" id="confirm">Confirm with itsme</button></p>
+  <h2>Orders and offers</h2>
+  <p>You approve each one in the itsme app.</p>
   <p id="unavailable" hidden><small>Confirming an operation with itsme needs the key pairs method.</small></p>
+  <ul id="operations"></ul>
   <ul id="confirmed"></ul>
   <p><button type="button" id="logout">Log out</button></p>
 </section>
@@ -69,8 +71,13 @@ const MESSAGES = {
   fraud_suspected: 'For your security, this has been blocked. Never share your codes over the phone.',
   wrong_customer: 'This confirmation was not started by you. Nothing was changed.',
   wrong_person: 'The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.',
-  confirmation_unavailable: 'Confirmation with itsme is not available in this configuration.'
+  confirmation_unavailable: 'Confirmation with itsme is not available in this configuration.',
+  operation_not_found: 'This operation does not exist or can no longer be confirmed. Nothing was changed.',
+  unknown_operation: 'This operation cannot be confirmed. Nothing was changed.'
 };
+
+// README: "Several operations, one callback". Where the SPA reloads a confirmed record, by its type.
+const RECORDS = { order: '/api/orders/', offer: '/api/offers/' };
 
 const $ = id => document.getElementById(id);
 const show = (text, kind) => { $('message').textContent = text; $('message').className = kind; $('message').hidden = false; };
@@ -127,19 +134,27 @@ async function redeemLogin(code) {
 
 // ---------------------------------------------------------------- confirmation
 
-// Step 1: the API returns the itsme URL; the token stays in sessionStorage during the round trip
-$('confirm').addEventListener('click', async () => {
+// Step 1: each button has its own start endpoint (the API decides the type and builds the text). The API returns
+// the itsme URL; the token stays in sessionStorage during the round trip, and nothing else is kept.
+async function startConfirmation(action) {
   const challenge = await newBrowserCodeChallenge();
-  const { status, data } = await api('POST', '/api/confirmation/start', { browserCodeChallenge: challenge });
+  const { status, data } = await api('POST', action, { browserCodeChallenge: challenge });
   if (status === 200) { location.assign(data.redirect); } else { showError(data.error); }
-});
+}
 
-// Step 3: the backend sent the browser back to "/#confirmation=<code>"
+// Step 3: the backend sent the browser back to "/#confirmation=<code>". Redeeming executes the operation; the answer
+// says which one, and the SPA reloads that record from the API to show it as it is now.
 async function redeemConfirmation(code) {
   const { status, data } = await api('POST', '/api/confirmation/redeem', { handover: code, browserCodeVerifier: takeVerifier() });
-  if (status === 200) { show('Confirmed: ' + data.operation + '.', 'notice'); }
-  else if (status === 401) { show('Your session has expired. Nothing was changed.', 'error'); }
-  else { showError(data.error); }
+  if (status === 401) { show('Your session has expired. Nothing was changed.', 'error'); return; }
+  if (status !== 200) { showError(data.error); return; }
+  const path = RECORDS[data.operationType];
+  const record = path ? await api('GET', path + encodeURIComponent(data.operationReference)) : { status: 404 };
+  if (record.status === 200) {
+    show('Confirmed: ' + record.data.description + ' (' + record.data.status.toLowerCase() + ').', 'notice');
+  } else {
+    show('The operation was confirmed.', 'notice');
+  }
 }
 
 // ---------------------------------------------------------------- pages
@@ -151,12 +166,22 @@ async function showPortal() {
   $('customer-id').textContent = data.customerId;
   $('level').textContent = data.authenticationLevel;
   $('expires-at').textContent = data.expiresAt;
-  $('operation').textContent = data.operation;
-  $('confirm-row').hidden = !data.confirmationAvailable;
   $('unavailable').hidden = data.confirmationAvailable;
+  for (const operation of data.operations) {
+    const li = document.createElement('li');
+    li.textContent = operation.description + ' ';
+    if (data.confirmationAvailable) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = operation.label;
+      button.addEventListener('click', () => startConfirmation(operation.action));
+      li.appendChild(button);
+    }
+    $('operations').appendChild(li);
+  }
   for (const c of data.confirmed) {
     const li = document.createElement('li');
-    li.textContent = 'Confirmed: ' + c.operation + ' (' + c.confirmedAt + ')';
+    li.textContent = 'Confirmed: ' + c.operationType + ' ' + c.operationReference + ' (' + c.confirmedAt + ')';
     $('confirmed').appendChild(li);
   }
   $('portal').hidden = false;

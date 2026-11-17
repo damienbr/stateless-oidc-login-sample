@@ -86,19 +86,24 @@ The code works **once**, even when the answer is an error.
 
 The customer is logged in: every call sends `Authorization: Bearer <token>`.
 
+Each kind of operation has its own start endpoint, and all of them end with the same redemption (README: "Several operations, one callback"). The record to confirm (the order, the offer) already exists on the server; its id is in the start URL.
+
 ### 1. Start
 
 ```http
-POST /api/confirmation/start
+POST /api/orders/O-2001/confirm          (or POST /api/offers/F-3001/accept)
 Authorization: Bearer <token>
 Content-Type: application/json
 
 {"browserCodeChallenge": "<a new browser code challenge>"}
 ```
 
+You send no text and no amount: the backend reads the record for the logged-in customer and builds the text shown in the itsme app.
+
 | Answer | What to do |
 |---|---|
 | `200 {"redirect": "https://..."}` | `location.assign(redirect)`: the customer goes to itsme. Keep the token where it survives this page change (the demo uses `sessionStorage`) |
+| `400 {"error": "operation_not_found"}` | The record does not exist, is another customer's, or is no longer open |
 | `400 {"error": "<code>"}` | Show the message for that code |
 
 ### 2. Back from itsme
@@ -122,10 +127,48 @@ Content-Type: application/json
 
 | Answer | Meaning |
 |---|---|
-| `200 {"operation": "..."}` | Confirmed and executed |
+| `200 {"operationType": "order", "operationReference": "O-2001"}` | Confirmed and executed. Reload that record (below) |
 | `400 {"error": "invalid_handover"}` | Too late, already used, or another browser. Nothing was changed |
 | `400 {"error": "wrong_customer"}` | Started by another customer. Nothing was changed |
+| `400 {"error": "operation_not_found"}` | The record changed in the meantime (for example, already confirmed). Nothing was changed |
 | `401` | The token has expired. Nothing was changed |
+
+### 4. Show the result: reload the record from the server
+
+Leaving for itsme unloads the SPA: everything held in JavaScript memory is gone when the customer comes back, on `/`. Do not try to keep the screen's state in the browser. Rebuild it from the server:
+
+| `operationType` | Reload with |
+|---|---|
+| `order` | `GET /api/orders/{operationReference}` |
+| `offer` | `GET /api/offers/{operationReference}` |
+
+```http
+GET /api/orders/O-2001
+Authorization: Bearer <token>
+```
+
+`200 {"orderId": "O-2001", "description": "Smart thermostat", "amount": 149.00, "status": "CONFIRMED"}`, or `404` if it is not this customer's.
+
+Route to the record's own page from there if the application has one (for example `/orders/O-2001`). The type and reference come from the redemption's answer, so no return address is needed in a URL.
+
+Why not keep the order in `localStorage` before leaving:
+
+- **The server's copy is the one that counts.** The text shown in itsme is built from the stored record, and the operation is executed on it. A browser copy can differ: a status or a price changed, or the confirmation itself just changed the status.
+- **The customer can edit it.** The server never trusts it, but a screen rebuilt from it would show edited data as confirmed.
+- **Any script on the page can read it, and it stays** after logout, across tabs, for the next person on a shared computer.
+- **It may not be there.** Another tab, another browser, cleared storage.
+
+The browser code verifier is different: random, single use, useless after 60 seconds, and it carries no business data.
+
+## Timers
+
+| What | Duration | Starts | If exceeded |
+|---|---|---|---|
+| Approving in the itsme app | 5 minutes | the start request | callback → `confirmation_not_found` (login: `authorization_request_not_found`) |
+| Redeeming the one-time code | 60 seconds | the callback | `invalid_handover` |
+| Demo token | 15 minutes | the login | `401` |
+
+The 60 seconds only cover the page load after the callback: redeem the code as soon as the page starts. In every case nothing is executed; offer to start again, never retry with the same code.
 
 ## Entry points: what handles each request
 
@@ -136,9 +179,10 @@ The login's first two requests are not handled by one of our controllers: Spring
 | `POST /oauth2/authorization/itsme` | Spring's `OAuth2AuthorizationRequestRedirectFilter` | `ItsmeAuthorizationRequestResolver` (step 1: `ItsmeHandover.begin`), `JdbcAuthorizationRequestRepository` |
 | `GET /login/oauth2/code/itsme` (from itsme) | Spring's `OAuth2LoginAuthenticationFilter` | `ItsmeOidcUserService`, then `ItsmeLoginSuccessHandler` (step 2: `ItsmeHandover.complete`) or `ItsmeLoginFailureHandler` |
 | `POST /itsme/login/handover` | `ItsmeLoginHandoverController` | step 3: `ItsmeHandover.redeem`, then `LoginHandover` |
-| `POST /api/confirmation/start` | `DemoConfirmationController` | `ItsmeConfirmationService.start` (step 1) |
+| `POST /api/orders/{id}/confirm`, `POST /api/offers/{id}/accept` | `DemoConfirmationController` | `ConfirmableOperations.prepare`, then `ItsmeConfirmationService.start` (step 1) |
 | `GET /itsme/confirmation/callback` (from itsme) | `ItsmeConfirmationCallbackController` | `ItsmeConfirmationService.complete` (step 2) |
-| `POST /api/confirmation/redeem` | `DemoConfirmationController` | `ItsmeConfirmationService.redeem` (step 3), then the operation |
+| `POST /api/confirmation/redeem` | `DemoConfirmationController` | `ItsmeConfirmationService.redeem` (step 3), then `ConfirmableOperations.execute` |
+| `GET /api/orders/{id}`, `GET /api/offers/{id}` | `DemoController` | the record, for this customer only |
 
 ## Do and do not
 
@@ -146,6 +190,7 @@ The login's first two requests are not handled by one of our controllers: Spring
 - **Do** remove the fragment from the address bar as soon as you have read the code.
 - **Do** write server data with `textContent`, never with `innerHTML`: a script injected into the page could read the token and the verifier.
 - **Do not** put the verifier, the token or any customer data in a URL.
+- **Do not** keep the order, offer or any business data in `localStorage` or `sessionStorage` across the round trip: reload it by id.
 - **Do not** retry a redemption that failed: the code is gone. Start the flow again.
 - **Do not** display the `error` parameter from the URL: anyone can change it. Map each code to a fixed message.
 

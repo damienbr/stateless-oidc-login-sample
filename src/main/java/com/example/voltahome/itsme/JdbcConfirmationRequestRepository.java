@@ -13,7 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * README: "Confirmation of an operation". Stores the confirmation in progress in the database, like
- * JdbcAuthorizationRequestRepository does for the login, plus who started it and what is to be approved.
+ * JdbcAuthorizationRequestRepository does for the login, plus who started it and what is to be approved: the operation
+ * type and reference, never read from the callback (README: "Several operations, one callback"), and the text.
  * Read + checked delete makes each stored confirmation single-use, without database-specific SQL.
  */
 @Component
@@ -37,11 +38,13 @@ public class JdbcConfirmationRequestRepository {
         Instant now = clock.instant();
         jdbc.sql("""
                 INSERT INTO itsme_confirmation_request
-                  (state, customer_id, operation_reference, approval_text, nonce, code_verifier, created_at, expires_at)
-                VALUES (:state, :customerId, :reference, :text, :nonce, :codeVerifier, :createdAt, :expiresAt)
+                  (state, customer_id, operation_type, operation_reference, approval_text, nonce, code_verifier,
+                   created_at, expires_at)
+                VALUES (:state, :customerId, :type, :reference, :text, :nonce, :codeVerifier, :createdAt, :expiresAt)
                 """)
                 .param("state", pending.state())
                 .param("customerId", pending.customerId())
+                .param("type", pending.operation().type())
                 .param("reference", pending.operation().reference())
                 .param("text", pending.operation().text().value())
                 .param("nonce", pending.nonce())
@@ -85,7 +88,7 @@ public class JdbcConfirmationRequestRepository {
                 .query((rs, rowNum) -> new PendingConfirmation(
                         rs.getString("state"),
                         rs.getString("customer_id"),
-                        new ItsmeOperation(rs.getString("operation_reference"),
+                        new ItsmeOperation(rs.getString("operation_type"), rs.getString("operation_reference"),
                                 ItsmeFreeText.stored(rs.getString("approval_text"))),
                         rs.getString("nonce"),
                         rs.getString("code_verifier")))

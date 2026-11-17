@@ -105,6 +105,8 @@ public abstract class ItsmeIntegrationTest {
         jdbc.sql("DELETE FROM itsme_authorization_request").update();
         jdbc.sql("DELETE FROM itsme_confirmation_request").update();
         jdbc.sql("DELETE FROM itsme_handover").update();
+        jdbc.sql("UPDATE customer_order SET status = 'OPEN'").update();
+        jdbc.sql("UPDATE offer SET status = 'OPEN'").update();
         confirmedOperations.clear();
         fraud.clear();
         clock.reset();
