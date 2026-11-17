@@ -32,10 +32,12 @@ CREATE TABLE IF NOT EXISTS itsme_authorization_request (
 CREATE INDEX IF NOT EXISTS ix_itsme_authreq_expires ON itsme_authorization_request (expires_at);
 
 -- Confirmation in progress (README: "Confirmation of an operation"): who started it, what is to be approved, and the
--- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation is never read from the callback.
+-- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation is never read from the callback:
+-- its type and reference (README: "Several operations, one callback") are read from here.
 CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
     state               VARCHAR(128)   PRIMARY KEY,
     customer_id         VARCHAR(64)    NOT NULL,
+    operation_type      VARCHAR(32)    NOT NULL,
     operation_reference VARCHAR(128)   NOT NULL,
     approval_text       VARCHAR(7500)  NOT NULL,
     nonce               VARCHAR(128)   NOT NULL,
@@ -59,3 +61,21 @@ CREATE TABLE IF NOT EXISTS itsme_handover (
     expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_handover_expires ON itsme_handover (expires_at);
+
+-- DEMO ONLY (README: "Several operations, one callback"). Orders and offers of the fictitious energy supplier, which a
+-- customer confirms with itsme. In a real application these tables already exist.
+CREATE TABLE IF NOT EXISTS customer_order (
+    order_id     VARCHAR(64)    PRIMARY KEY,
+    customer_id  VARCHAR(64)    NOT NULL,
+    description  VARCHAR(256)   NOT NULL,
+    amount       DECIMAL(10, 2) NOT NULL,      -- EUR
+    status       VARCHAR(16)    NOT NULL       -- OPEN, CONFIRMED
+);
+
+CREATE TABLE IF NOT EXISTS offer (
+    offer_id       VARCHAR(64)    PRIMARY KEY,
+    customer_id    VARCHAR(64)    NOT NULL,
+    description    VARCHAR(256)   NOT NULL,
+    price_per_kwh  DECIMAL(10, 4) NOT NULL,    -- EUR
+    status         VARCHAR(16)    NOT NULL     -- OPEN, ACCEPTED
+);

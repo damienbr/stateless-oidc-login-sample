@@ -326,7 +326,7 @@ Remember that everything in this section is a demo stand-in. A real application 
 
 ## 12. Confirming an operation from the portal
 
-A logged-in customer clicks "Confirm with itsme" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, Request Object, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
+A logged-in customer clicks "Confirm order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, Request Object, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 

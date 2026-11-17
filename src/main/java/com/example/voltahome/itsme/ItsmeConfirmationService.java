@@ -148,7 +148,8 @@ public class ItsmeConfirmationService {
             throw failure("no_customer", null);
         }
 
-        ItsmeConfirmationResult approved = new ItsmeConfirmationResult(customerId, pending.operation().reference(),
+        ItsmeConfirmationResult approved = new ItsmeConfirmationResult(customerId,
+                pending.operation().type(), pending.operation().reference(),
                 pending.operation().text().value(),
                 properties.acr(),        // enforced by AcrValidator during ID token validation
                 clock.instant());
