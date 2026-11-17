@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS itsme_handover (
     flow        VARCHAR(16)    NOT NULL,          -- LOGIN or CONFIRMATION
     browser_code_challenge VARCHAR(64) NOT NULL,
     code        VARCHAR(64)    UNIQUE,            -- set by complete
-    result      VARCHAR(8000),                    -- set by complete; no itsme claim
+    result      VARCHAR(16000),                   -- set by complete (JSON); no itsme claim. Holds the approval text:
+                                                  -- 7500 characters, up to two each once escaped (" and \)
     expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_handover_expires ON itsme_handover (expires_at);

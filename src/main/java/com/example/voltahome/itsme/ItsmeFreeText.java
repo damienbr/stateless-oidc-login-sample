@@ -8,7 +8,9 @@ import java.nio.charset.Charset;
  * the ISO-8859-15 character set only.
  * Built only through the builder, which emits those tags and nothing else. Text containing '<', '>' or '&' is refused
  * instead of escaped: the itsme documentation does not say whether entities such as {@code &amp;} are decoded, and the
- * customer must read exactly what the application means.
+ * customer must read exactly what the application means. Control characters (tab, line feed, ...) are refused too: a
+ * line break is {@code <br>}, and the documentation does not say how raw ones are shown. This also bounds the text
+ * once stored as JSON with the result of the confirmation (schema.sql, itsme_handover.result).
  */
 public final class ItsmeFreeText {
 
@@ -23,6 +25,9 @@ public final class ItsmeFreeText {
         }
         if (!ITSME_CHARSET.newEncoder().canEncode(value)) {
             throw new IllegalArgumentException("itsme free text must use the ISO-8859-15 character set");
+        }
+        if (value.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("itsme free text cannot contain control characters; use <br>");
         }
         this.value = value;
     }
