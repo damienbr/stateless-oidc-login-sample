@@ -45,9 +45,9 @@ class ClientSecretHs256LoginFlowTest extends ItsmeIntegrationTest {
     @Test
     void hs256TokenLogsTheLinkedCustomerIn() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
-        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedUrl("/portal")).andReturn();
+        MvcResult result = login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover()).andReturn();
 
-        openPortal(result)
+        portal(tokenAfter(result))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("C-1001")));
     }
