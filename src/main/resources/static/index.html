@@ -3,7 +3,7 @@
   DEMO ONLY. Stands in for the application's single page application (SPA). README: "Hand-over" explains the three
   steps; docs/spa-handover.md is the guide for the SPA developer.
   - No cookie: the token from the hand-over is kept in sessionStorage and sent as "Authorization: Bearer".
-  - Before each itsme flow, a random browser code verifier is kept in localStorage, and only its S256 hash, the
+  - Before each itsme flow, a random browser code verifier is kept in sessionStorage, and only its S256 hash, the
     browser code challenge, is sent at the start. Redeeming the one-time code from the URL fragment requires the
     verifier itself: it binds the end of the flow to this browser. (Not PKCE's code_verifier: that one stays between
     the backend and itsme.)
@@ -56,7 +56,7 @@
 'use strict';
 
 const TOKEN = 'voltahome.token';                     // sessionStorage: this tab only, gone when the tab closes
-const VERIFIER = 'voltahome.browser-code-verifier';  // localStorage: itsme may bring the browser back in a new tab
+const VERIFIER = 'voltahome.browser-code-verifier';  // sessionStorage: one flow per tab, flows in other tabs untouched
 
 // README: "Error codes". Fixed messages only: the raw "error" parameter comes from the URL and is never displayed.
 const MESSAGES = {
@@ -96,14 +96,14 @@ const base64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
  */
 async function newBrowserCodeChallenge() {
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
-  write(localStorage, VERIFIER, verifier);
+  write(sessionStorage, VERIFIER, verifier);
   return base64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
 }
 
-/** The browser code verifier of this browser, used once. */
+/** The browser code verifier of this tab, used once. */
 function takeVerifier() {
-  const verifier = read(localStorage, VERIFIER);
-  write(localStorage, VERIFIER, null);
+  const verifier = read(sessionStorage, VERIFIER);
+  write(sessionStorage, VERIFIER, null);
   return verifier;
 }
 

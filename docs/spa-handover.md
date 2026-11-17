@@ -12,7 +12,7 @@ The application uses **no cookie**. After the login, the SPA calls the API with 
 
 > Not to be confused with PKCE's `code_verifier` and `code_challenge`. Those are between the backend and itsme, and the SPA never sees them. The browser pair is between the SPA and the backend.
 
-Before each itsme flow (login or confirmation), generate a new verifier, keep it in `localStorage`, and compute its challenge:
+Before each itsme flow (login or confirmation), generate a new verifier, keep it in `sessionStorage`, and compute its challenge:
 
 ```js
 const base64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
@@ -20,14 +20,14 @@ const base64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
 
 async function newBrowserCodeChallenge() {
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));     // 256 random bits: the secret
-  localStorage.setItem('browser-code-verifier', verifier);
+  sessionStorage.setItem('browser-code-verifier', verifier);
   return base64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));   // its hash
 }
 ```
 
 - The **challenge** is sent at the start. It proves nothing by itself.
 - The **verifier** stays in the browser until the end of the flow, then is sent once with the code.
-- Why `localStorage`: the itsme app may bring the customer back in a new tab of the same browser. Read the verifier once at the end of the flow, then remove it.
+- Why `sessionStorage`: the itsme flow comes back in the tab that started it, and each tab has its own `sessionStorage`. Flows started in two tabs at the same time keep their own verifier; with `localStorage` the second would overwrite the first, and both would fail. Read the verifier once at the end of the flow, then remove it.
 - `crypto.subtle` works on `https://` pages and on `http://localhost`.
 
 ## Login: three steps
@@ -72,7 +72,7 @@ history.replaceState(null, '', location.pathname + location.search);
 POST /itsme/login/handover
 Content-Type: application/json
 
-{"handover": "<code>", "browserCodeVerifier": "<the verifier from localStorage>"}
+{"handover": "<code>", "browserCodeVerifier": "<the verifier from sessionStorage>"}
 ```
 
 | Answer | Meaning |
@@ -122,7 +122,7 @@ POST /api/confirmation/redeem
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{"handover": "<code>", "browserCodeVerifier": "<the verifier from localStorage>"}
+{"handover": "<code>", "browserCodeVerifier": "<the verifier from sessionStorage>"}
 ```
 
 | Answer | Meaning |

@@ -305,6 +305,22 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
+        void longestApprovalTextIsHandedOverIntact() throws Exception {
+            // 7500 quotes: twice as long once written as JSON in itsme_handover.result
+            String longest = "\"".repeat(ItsmeFreeText.MAX_LENGTH);
+            StartedConfirmation started = startConfirmation(alex);
+            jdbc.sql("UPDATE itsme_confirmation_request SET approval_text = :text").param("text", longest).update();
+            stubTokenEndpoint(idToken(started.nonce()).build());
+            String code = handoverCode(confirmationCallback(started.state())
+                    .andExpect(redirectedToConfirmationHandover()).andReturn());
+
+            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
+
+            assertThat(confirmedOperations.forCustomer("C-1001")).singleElement()
+                    .satisfies(r -> assertThat(r.approvalText()).isEqualTo(longest));
+        }
+
+        @Test
         void approvalCannotBeRedeemedTwice() throws Exception {
             String code = handoverCode(approve(alex, t -> t).andReturn());
             redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());

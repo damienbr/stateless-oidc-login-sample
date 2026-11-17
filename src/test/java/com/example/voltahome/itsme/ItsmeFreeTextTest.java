@@ -40,6 +40,16 @@ class ItsmeFreeTextTest {
     }
 
     @Test
+    void controlCharactersAreRefused() {
+        assertThatThrownBy(() -> ItsmeFreeText.builder().text("Line one\nLine two").build())
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ItsmeFreeText.builder().text("Amount:\tEUR 85.00").build())
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ItsmeFreeText.builder().text("Amount: \u0085EUR 85.00").build())
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void emptyTextIsRefused() {
         assertThatThrownBy(() -> ItsmeFreeText.builder().build()).isInstanceOf(IllegalArgumentException.class);
     }
