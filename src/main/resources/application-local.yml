@@ -3,10 +3,11 @@
 # No Docker, no external service, no itsme credentials needed.
 server:
   port: 8080
+  # The confirmation text travels in the URL of the itsme stub, served by this same Tomcat (default limit: 8 KB)
+  max-http-request-header-size: 64KB
 
 itsme:
   client-id: voltahome-local
-  # Switch method with -Ditsme.client-authentication=client-secret (second IntelliJ run configuration)
   client-secret: local-development-secret-not-for-production
   redirect-uri: http://localhost:8080/login/oauth2/code/itsme
   endpoints:
@@ -19,8 +20,3 @@ itsme:
     redirect-uri: http://localhost:8080/itsme/confirmation/callback
   proxy:
     host: ""
-  keys:
-    ephemeral: true               # key pairs method: throw-away keys generated at startup; refused with non-localhost endpoints
-
-itsme-stub:
-  client-jwks-uri: http://localhost:8080/.well-known/jwks.json   # where the stub reads OUR public keys, like itsme

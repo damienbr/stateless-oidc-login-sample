@@ -1,6 +1,5 @@
 package com.example.voltahome.local;
 
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -12,17 +11,11 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.example.voltahome.itsme.ItsmeClaims;
 import com.example.voltahome.itsme.ItsmeProperties;
-import com.nimbusds.jose.jwk.JWKSet;
-import com.nimbusds.jose.jwk.source.JWKSource;
-import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
-import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -35,13 +28,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.util.HtmlUtils;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * LOCAL DEVELOPMENT ONLY ("local" profile). An itsme stub served by the application itself, so the complete
  * login can be clicked through in a browser without itsme credentials, Docker or any external service.
- * It checks what itsme would check: the Request Object when there is one (decrypted, client signature verified),
- * the registered redirect URI, PKCE, a single-use code, and the client authentication (signed client assertion or
- * client secret, depending on itsme.client-authentication). It is not itsme and does not look like it.
+ * It checks what itsme would check: the registered redirect URI, PKCE, a single-use code, the WYSIWYS template of a
+ * confirmation, and the client secret at the token endpoint. It is not itsme and does not look like it.
  */
 @Controller
 @Profile("local")
@@ -53,25 +46,21 @@ class ItsmeStubController {
     private static final Duration CODE_LIFETIME = Duration.ofMinutes(3);   // as documented by itsme
 
     private final ItsmeProperties properties;
-    private final JWKSource<SecurityContext> clientKeys;      // the application's public keys, read from its JWKS
-    private final String clientJwksUri;
+    private final ObjectMapper json;
     private final ItsmeStubCrypto crypto = new ItsmeStubCrypto();
     private final Map<String, Authorization> pendingAuthorizations = new ConcurrentHashMap<>();
     private final Map<String, PendingCode> codes = new ConcurrentHashMap<>();
-    private final Set<String> usedAssertionIds = ConcurrentHashMap.newKeySet();
     private final SecureRandom random = new SecureRandom();
 
-    /** The parameters itsme will act on: taken from the verified Request Object, not from the URL. */
+    /** The parameters itsme will act on, as read from the URL. */
     private record Authorization(String redirectUri, String state, String nonce, String codeChallenge,
                                  String acrValues, Instant expiresAt) {}
 
     private record PendingCode(Authorization authorization, ItsmeStubScenario scenario, Instant expiresAt) {}
 
-    ItsmeStubController(ItsmeProperties properties,
-                        @Value("${itsme-stub.client-jwks-uri}") String clientJwksUri) throws MalformedURLException {
+    ItsmeStubController(ItsmeProperties properties, ObjectMapper json) {
         this.properties = properties;
-        this.clientJwksUri = clientJwksUri;
-        this.clientKeys = JWKSourceBuilder.create(URI.create(clientJwksUri).toURL()).retrying(true).build();
+        this.json = json;
     }
 
     // ------------------------------------------------------------------ metadata
@@ -85,9 +74,9 @@ class ItsmeStubController {
         d.put("authorization_endpoint", e.authorizationUri());
         d.put("token_endpoint", e.tokenUri());
         d.put("jwks_uri", e.jwkSetUri());
-        d.put("token_endpoint_auth_methods_supported", List.of("private_key_jwt", "client_secret_post"));
-        d.put("id_token_encryption_alg_values_supported", List.of("RSA-OAEP-256", "dir"));
-        d.put("id_token_encryption_enc_values_supported", List.of("A128CBC-HS256", "A256GCM"));
+        d.put("token_endpoint_auth_methods_supported", List.of("client_secret_post"));
+        d.put("id_token_encryption_alg_values_supported", List.of("dir"));
+        d.put("id_token_encryption_enc_values_supported", List.of("A256GCM"));
         d.put("id_token_signing_alg_values_supported", List.of("RS256", "HS256"));
         return d;
     }
@@ -106,23 +95,7 @@ class ItsmeStubController {
         if (!properties.clientId().equals(query.get("client_id")) || !"code".equals(query.get("response_type"))) {
             return badRequest("Unknown client_id, or response_type is not 'code'.");
         }
-        // With a Request Object, only its (verified) content counts. Without one, the URL parameters are used.
-        Map<String, Object> params = new LinkedHashMap<>();
-        boolean fromRequestObject = query.get("request") != null;
-        if (fromRequestObject) {
-            try {
-                JWTClaimsSet ro = crypto.readRequestObject(query.get("request"), clientKeys);
-                if (!properties.clientId().equals(ro.getIssuer())
-                        || !ro.getAudience().contains(properties.endpoints().issuer())) {
-                    return badRequest("Request Object: wrong issuer or audience.");
-                }
-                params.putAll(ro.getClaims());
-            } catch (Exception e) {
-                return badRequest("The Request Object could not be decrypted or its signature is not valid.");
-            }
-        } else {
-            params.putAll(query);
-        }
+        Map<String, String> params = query;
         // Registered redirect URIs: the login's, and the confirmation's
         boolean confirmation = String.valueOf(params.get("scope"))
                 .contains("service:" + properties.confirmation().serviceCode());
@@ -135,18 +108,18 @@ class ItsmeStubController {
         }
         String approvalText = null;
         if (confirmation) {
-            // itsme Confirmation: a Request Object is required, and so is a WYSIWYS template
+            // itsme Confirmation: a WYSIWYS template is required
             approvalText = freeText(params.get("claims"));
-            if (!fromRequestObject || approvalText == null) {
-                return badRequest("Confirmation: a Request Object with the free_text WYSIWYS template is required.");
+            if (approvalText == null) {
+                return badRequest("Confirmation: the free_text WYSIWYS template is required in the claims parameter.");
             }
         }
-        Authorization authorization = new Authorization(str(params.get("redirect_uri")), str(params.get("state")),
-                str(params.get("nonce")), str(params.get("code_challenge")), str(params.get("acr_values")),
+        Authorization authorization = new Authorization(params.get("redirect_uri"), params.get("state"),
+                params.get("nonce"), params.get("code_challenge"), params.get("acr_values"),
                 Instant.now().plus(Duration.ofMinutes(5)));
         String id = randomValue();
         pendingAuthorizations.put(id, authorization);
-        return ResponseEntity.ok(page(chooser(id, query, params, fromRequestObject, approvalText)));
+        return ResponseEntity.ok(page(chooser(id, params, approvalText)));
     }
 
     @PostMapping("/authorization/approve")
@@ -177,10 +150,8 @@ class ItsmeStubController {
                  produces = MediaType.APPLICATION_JSON_VALUE)
     @ResponseBody
     ResponseEntity<Map<String, Object>> token(@RequestParam Map<String, String> form) {
-        boolean clientAuthenticated = properties.usesKeyPairs()
-                ? clientAssertionIsValid(form)
-                : properties.clientId().equals(form.get("client_id"))
-                        && properties.clientSecret().equals(form.get("client_secret"));
+        boolean clientAuthenticated = properties.clientId().equals(form.get("client_id"))
+                && properties.clientSecret().equals(form.get("client_secret"));
         if (!clientAuthenticated) {
             return error(HttpStatus.UNAUTHORIZED, "invalid_client");
         }
@@ -206,15 +177,11 @@ class ItsmeStubController {
                 .expirationTime(Date.from(now.plus(Duration.ofMinutes(5))))
                 .claim("nonce", pending.authorization().nonce())
                 .claim("acr", advanced ? ACR_ADVANCED : ACR_BASIC)
-                .claim(ItsmeClaims.ONGOING_CALL, s.ongoingCall)
                 .build();
         try {
-            String idToken = properties.usesKeyPairs()
-                    ? crypto.signedAndEncrypted(claims,
-                            ItsmeStubCrypto.encryptionKeyOf(JWKSet.load(URI.create(clientJwksUri).toURL())))
-                    : properties.idTokenSignedWithSecret()
-                            ? crypto.hs256SignedAndEncryptedWithSecret(claims, properties.clientSecret(), properties.clientSecret())
-                            : crypto.signedAndEncryptedWithSecret(claims, properties.clientSecret());
+            String idToken = properties.idTokenSignedWithSecret()
+                    ? crypto.hs256SignedAndEncryptedWithSecret(claims, properties.clientSecret(), properties.clientSecret())
+                    : crypto.signedAndEncryptedWithSecret(claims, properties.clientSecret());
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("access_token", "stub-access-token-" + randomValue());
             body.put("token_type", "Bearer");
@@ -226,54 +193,31 @@ class ItsmeStubController {
         }
     }
 
-    /** private_key_jwt: signed by the client, iss = sub = client_id, aud = token endpoint, not expired, jti unused. */
-    private boolean clientAssertionIsValid(Map<String, String> form) {
-        if (!"urn:ietf:params:oauth:client-assertion-type:jwt-bearer".equals(form.get("client_assertion_type"))
-                || form.get("client_assertion") == null) {
-            return false;
-        }
-        try {
-            JWTClaimsSet a = crypto.verifyClientAssertion(form.get("client_assertion"), clientKeys);
-            return properties.clientId().equals(a.getIssuer())
-                    && properties.clientId().equals(a.getSubject())
-                    && a.getAudience().contains(properties.endpoints().tokenUri())
-                    && a.getExpirationTime() != null && a.getExpirationTime().toInstant().isAfter(Instant.now())
-                    && a.getJWTID() != null && usedAssertionIds.add(a.getJWTID());   // replay protection
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     // ------------------------------------------------------------------ page
 
-    private String chooser(String id, Map<String, String> query, Map<String, Object> params, boolean fromRequestObject,
-                           String approvalText) {
+    private String chooser(String id, Map<String, String> params, String approvalText) {
         StringBuilder html = new StringBuilder();
         if (approvalText != null) {
             // Shown as source text, not rendered: the stub never interprets HTML sent by the application
             html.append("<h2>Operation to approve</h2>")
                     .append("<p>The itsme app would show this text (free_text template; tags b, i, u, br):</p>")
                     .append("<pre class='approval'>").append(esc(approvalText)).append("</pre>")
+                    .append("<p class='note'>Read from the <code>claims</code> parameter of the URL. The ")
+                    .append("application executes the operation it stored when the confirmation started.</p>")
+                    .append("<p class='note'>The request names the itsme account linked to the customer ")
+                    .append("(<code>userinfo.sub</code> in the claims): itsme would skip its identification page. ")
+                    .append("The stub still offers every account, to show what happens with another one.</p>")
                     .append("<p class='note'>Choosing an account below approves the operation with that account. ")
                     .append("Only the itsme account linked to the logged-in customer is accepted.</p>");
         }
-        html.append("<h2>What the application asked for</h2>");
-        if (fromRequestObject) {
-            html.append("<p>Read from the <strong>Request Object</strong>, decrypted with the stub's private key ")
-                    .append("and verified with the application's public key. Editing the browser URL cannot change it.</p>");
-        } else {
-            html.append("<p>Read from the <strong>URL</strong> (no Request Object). These parameters are not protected: ")
-                    .append("try removing <code>acr_values</code> from the address and reloading.</p>");
-        }
-        html.append("<table>")
+        html.append("<h2>What the application asked for</h2>")
+                .append("<p>Read from the <strong>URL</strong>. The ID token check is what protects the level: ")
+                .append("try removing <code>acr_values</code> from the address and reloading.</p>")
+                .append("<table>")
                 .append(row("acr_values", params.getOrDefault("acr_values", "(none: basic level)")))
                 .append(row("claims", params.get("claims")))
                 .append(row("scope", params.get("scope")))
                 .append("</table>");
-        if (fromRequestObject && (query.containsKey("acr_values") || query.containsKey("claims"))) {
-            html.append("<p class='note'>The URL also contains acr_values or claims. They are ignored: ")
-                    .append("only the Request Object counts.</p>");
-        }
         html.append("<h2>Choose a test itsme account</h2>");
         for (ItsmeStubScenario s : ItsmeStubScenario.values()) {
             html.append("<form method='post' action='/itsme-stub/v2/authorization/approve'>")
@@ -285,8 +229,14 @@ class ItsmeStubController {
         return html.toString();
     }
 
-    /** The text of the free_text template, if the claims request one (essential, under "id_token"). */
-    private static String freeText(Object claims) {
+    /** The text of the free_text template, if the claims (JSON) request one (essential, under "id_token"). */
+    private String freeText(String claimsJson) {
+        Object claims;
+        try {
+            claims = claimsJson == null ? null : json.readValue(claimsJson, Map.class);
+        } catch (Exception e) {
+            return null;
+        }
         if (!(claims instanceof Map<?, ?> all) || !(all.get("id_token") instanceof Map<?, ?> idToken)) {
             return null;
         }

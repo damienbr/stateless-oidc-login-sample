@@ -15,18 +15,14 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
- * The client secret method when the itsme registration signs ID tokens with HS256 (itsme.id-token-signature=HS256):
- * the JWS inside the encryption is an HMAC made with the client secret (OIDC Core §10.1). Only what differs from
- * ClientSecretLoginFlowTest is tested here. README: "Two client authentication methods".
+ * When the itsme registration signs ID tokens with HS256 (itsme.id-token-signature=HS256): the JWS inside the
+ * encryption is an HMAC made with the client secret (OIDC Core §10.1). Only what differs from ItsmeLoginFlowTest
+ * (RS256) is tested here. README: "Client authentication".
  */
 class ClientSecretHs256LoginFlowTest extends ItsmeIntegrationTest {
 
-    static final String CLIENT_SECRET = "test-client-secret-hs256-0123456789abcdef";
-
     @DynamicPropertySource
-    static void clientSecretMethodWithHs256(DynamicPropertyRegistry registry) {
-        registry.add("itsme.client-authentication", () -> "client-secret");
-        registry.add("itsme.client-secret", () -> CLIENT_SECRET);
+    static void hs256Signature(DynamicPropertyRegistry registry) {
         registry.add("itsme.id-token-signature", () -> "HS256");
     }
 
@@ -34,12 +30,7 @@ class ClientSecretHs256LoginFlowTest extends ItsmeIntegrationTest {
 
     @Override
     protected ItsmeWireMock.IdTokenBuilder idToken(String nonce) {
-        return stub.idTokenForClientSecret(itsme.baseUrl() + "/v2", nonce, CLIENT_SECRET).signedWithSecret(CLIENT_SECRET);
-    }
-
-    @Override
-    protected void stubTokenEndpoint(String idToken) {
-        stub.stubTokenForClientSecret(itsme, idToken, CLIENT_SECRET);
+        return super.idToken(nonce).signedWithSecret(CLIENT_SECRET);
     }
 
     @Test

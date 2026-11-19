@@ -16,9 +16,7 @@ import java.util.function.UnaryOperator;
 
 import com.example.voltahome.demo.DemoConfirmedOperations;
 import com.example.voltahome.fraud.FraudService;
-import com.example.voltahome.itsme.ItsmeKeys;
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.nimbusds.jose.jwk.RSAKey;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -40,8 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Starts the application with H2 and a WireMock itsme. Each test starts from a clean state.
- * Default method: key pairs, with ephemeral keys (generated at startup), as in local development.
- * ClientSecretLoginFlowTest overrides the method and the two hooks below.
+ * ID tokens are signed by itsme with RS256 by default; ClientSecretHs256LoginFlowTest overrides the signature.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -49,6 +46,7 @@ import tools.jackson.databind.ObjectMapper;
 public abstract class ItsmeIntegrationTest {
 
     protected static final String CLIENT_ID = "test-client";
+    protected static final String CLIENT_SECRET = "test-client-secret-0123456789abcdef";
     protected static final String CALLBACK = "/login/oauth2/code/itsme";
     protected static final String CONFIRMATION_CALLBACK = "/itsme/confirmation/callback";
     protected static final String LOGIN_HANDOVER = "/itsme/login/handover";
@@ -80,6 +78,7 @@ public abstract class ItsmeIntegrationTest {
     @DynamicPropertySource
     static void itsmeProperties(DynamicPropertyRegistry registry) {
         registry.add("itsme.client-id", () -> CLIENT_ID);
+        registry.add("itsme.client-secret", () -> CLIENT_SECRET);
         registry.add("itsme.redirect-uri", () -> "http://localhost" + CALLBACK);   // MockMvc host
         registry.add("itsme.confirmation.redirect-uri", () -> "http://localhost" + CONFIRMATION_CALLBACK);
         registry.add("itsme.endpoints.issuer", () -> itsme.baseUrl() + "/v2");
@@ -88,14 +87,12 @@ public abstract class ItsmeIntegrationTest {
         registry.add("itsme.endpoints.jwk-set-uri", () -> itsme.baseUrl() + "/v2/jwks");
         registry.add("itsme.endpoints.discovery-uri", () -> itsme.baseUrl() + "/v2/.well-known/openid-configuration");
         registry.add("itsme.proxy.host", () -> "");
-        registry.add("itsme.keys.ephemeral", () -> "true");
     }
 
     @Autowired protected MockMvc mvc;
     @Autowired protected JdbcClient jdbc;
     @Autowired protected FraudService fraud;
     @Autowired protected MutableClock clock;
-    @Autowired protected ItsmeKeys keys;
     @Autowired protected DemoConfirmedOperations confirmedOperations;
     @Autowired protected ObjectMapper json;
 
@@ -118,8 +115,7 @@ public abstract class ItsmeIntegrationTest {
     // ------------------------------------------------------------------ helpers
 
     /** Step 1: the user clicks "Log in with itsme": the SPA posts its browser code challenge. */
-    protected record StartedLogin(String location, String state, String nonce, String requestObject,
-                                  MvcResult result) {}
+    protected record StartedLogin(String location, String state, String nonce, MvcResult result) {}
 
     protected StartedLogin startLogin() throws Exception {
         return startLogin(post("/oauth2/authorization/itsme").param("browser_code_challenge", BROWSER_CODE_CHALLENGE));
@@ -133,8 +129,7 @@ public abstract class ItsmeIntegrationTest {
         assertThat(result.getRequest().getSession(false)).as("no HttpSession").isNull();
         String location = result.getResponse().getRedirectedUrl();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(location).build().getQueryParams();
-        return new StartedLogin(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")),
-                decode(query.getFirst("request")), result);
+        return new StartedLogin(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")), result);
     }
 
     /** itsme redirects back with a code; the backend exchanges it and validates the ID token. */
@@ -181,18 +176,14 @@ public abstract class ItsmeIntegrationTest {
         return mvc.perform(get("/api/portal").header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
     }
 
-    /** ID token as itsme sends it for the client's method. */
+    /** ID token as itsme sends it: signed with RS256, encrypted with a key derived from the client secret. */
     protected ItsmeWireMock.IdTokenBuilder idToken(String nonce) {
-        return stub.idToken(itsme.baseUrl() + "/v2", nonce, ourPublicEncryptionKey());
+        return stub.idToken(itsme.baseUrl() + "/v2", nonce, CLIENT_SECRET);
     }
 
-    /** Token endpoint that only answers the client authentication of the client's method. */
+    /** Token endpoint that only answers our client secret. */
     protected void stubTokenEndpoint(String idToken) {
-        stub.stubToken(itsme, idToken);
-    }
-
-    protected RSAKey ourPublicEncryptionKey() {
-        return keys.encryptionKeys().get(0).toPublicJWK();
+        stub.stubToken(itsme, idToken, CLIENT_SECRET);
     }
 
     protected void givenLinked(String customerId, String sub) {

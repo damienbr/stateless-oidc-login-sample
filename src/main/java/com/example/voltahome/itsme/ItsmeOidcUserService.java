@@ -5,8 +5,6 @@ import java.util.List;
 import java.util.Optional;
 
 import com.example.voltahome.customer.CustomerRepository;
-import com.example.voltahome.fraud.FraudService;
-import com.example.voltahome.fraud.FraudSignal;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
@@ -31,14 +29,11 @@ public class ItsmeOidcUserService implements OAuth2UserService<OidcUserRequest, 
 
     private final ItsmeLinkRepository links;
     private final CustomerRepository customers;
-    private final FraudService fraud;
     private final Clock clock;
 
-    public ItsmeOidcUserService(ItsmeLinkRepository links, CustomerRepository customers,
-                                FraudService fraud, Clock clock) {
+    public ItsmeOidcUserService(ItsmeLinkRepository links, CustomerRepository customers, Clock clock) {
         this.links = links;
         this.customers = customers;
-        this.fraud = fraud;
         this.clock = clock;
     }
 
@@ -47,11 +42,6 @@ public class ItsmeOidcUserService implements OAuth2UserService<OidcUserRequest, 
         OidcIdToken idToken = request.getIdToken();
         String sub = idToken.getSubject();
         Optional<String> customerId = links.findCustomerBySub(sub);
-
-        if (Boolean.TRUE.equals(idToken.getClaimAsBoolean(ItsmeClaims.ONGOING_CALL))) {
-            fraud.report(FraudSignal.ONGOING_CALL, customerId.orElse(null), sub);
-            throw failure("fraud_suspected");
-        }
 
         if (customerId.isEmpty()) {
             throw failure("not_linked");

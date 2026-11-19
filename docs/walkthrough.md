@@ -1,6 +1,6 @@
 # Walkthrough: the four Spring Security defaults that do not fit itsme
 
-Key pairs in both directions, a pseudonymous user id, no HTTP session and a locked-down network: a step-by-step walkthrough of this sample. The [README](../README.md) is the reference; this page explains the reasoning, in reading order.
+An encrypted ID token, a pseudonymous user id, no HTTP session and a locked-down network: a step-by-step walkthrough of this sample. The [README](../README.md) is the reference; this page explains the reasoning, in reading order.
 
 A customer taps **Approve** in the itsme app. Two seconds later, their energy supplier's portal shows their dashboard. In those two seconds, six things happen between the browser, the Spring Boot backend and itsme.
 
@@ -15,7 +15,7 @@ The example is a fictitious energy supplier, **VoltaHome**. The stack is Spring 
 - [Run it first](#run-it-first)
 - [The map: one login in six hops](#the-map-one-login-in-six-hops)
 - [Why oauth2Login() is not enough](#why-oauth2login-is-not-enough)
-- [Default 1: everything is signed and encrypted](#default-1-everything-is-signed-and-encrypted)
+- [Default 1: the ID token is encrypted](#default-1-the-id-token-is-encrypted)
 - [Default 2: the user is a pseudonym](#default-2-the-user-is-a-pseudonym)
 - [Default 3: there is no session](#default-3-there-is-no-session)
 - [Default 4: the network is locked](#default-4-the-network-is-locked)
@@ -51,12 +51,12 @@ sequenceDiagram
     participant S as VoltaHome backend
     participant I as itsme
     B->>S: Click "Log in with itsme" (state, nonce, PKCE saved in the database)
-    S-->>B: Redirect to itsme, inside a signed and encrypted Request Object
+    S-->>B: Redirect to itsme (state, nonce, PKCE, acr_values in the URL)
     Note over B,I: Customer approves in the itsme app
     I-->>B: Callback with code and state
     B->>S: Callback, through the browser
-    S->>I: Code + signed client assertion + PKCE code_verifier
-    I-->>S: ID token, signed and encrypted
+    S->>I: Code + client secret + PKCE code_verifier
+    I-->>S: ID token, signed by itsme, encrypted with a key derived from the secret
     Note over S: Decrypt, verify, validate, then find the customer by sub
 ```
 
@@ -74,38 +74,26 @@ With Google, Spring Security needs almost nothing from us. We give it an `issuer
 
 Each of those steps assumes something that is not true for this itsme login:
 
-- **Spring assumes a shared secret and a signed ID token.** We use itsme's key-pair method: everything that travels is signed by its sender and encrypted for its receiver.
+- **Spring assumes a signed ID token.** itsme's ID token is also encrypted, with a key derived from our client secret.
 - **Spring assumes the token tells you who the user is.** itsme gives us a pseudonym, the `sub`. We must already know which of our customers it belongs to.
 - **Spring assumes there is an HTTP session.** The backend is stateless, and runs on several instances.
 - **Spring assumes it can reach the identity provider whenever it likes.** The network only allows calls that infrastructure teams opened in advance.
 
 None of this requires replacing `oauth2Login()`. Spring Security is built from small, replaceable parts, and we only swap the parts whose assumption is wrong. That is the real lesson: **find the assumption, then replace the smallest part that holds it.**
 
-## Default 1: everything is signed and encrypted
+## Default 1: the ID token is encrypted
 
-**What Spring does by default.** The backend proves who it is with a client secret. The authorization parameters travel in the browser URL. The ID token is a JWS: signed by the provider, readable by anyone who holds it.
+**What Spring does by default.** The backend proves who it is with a client secret, and the authorization parameters travel in the browser URL. That part fits itsme: Spring sends `client_id` and `client_secret` in the body of the token request (`client_secret_post`) without help. The ID token, for Spring, is a JWS: signed by the provider, readable by anyone who holds it.
 
-**Why it is not enough for us.** itsme offers a stronger method, based on key pairs, and we use it. Three things travel, and each one is protected the same way: **signed with the sender's private key, encrypted with the receiver's public key.**
+**Why it breaks with itsme.** itsme's ID token is a JWS *inside* a JWE: signed by itsme, then encrypted for us with `dir` and `A256GCM`, using a key derived from our client secret. Spring's default decoder cannot open the envelope. The itsme pages do not say how the key is derived; the OpenID Connect specification (§10.2) does: the SHA-256 hash of the secret. Confirm it in the itsme test environment on day one.
 
-| What travels | Signed by | Encrypted for |
-|---|---|---|
-| **Request Object**: our authorization parameters | us | itsme |
-| **Client assertion**: proves to the token endpoint that the request comes from us | us | (not encrypted) |
-| **ID token**: tells us who logged in | itsme | us |
-
-**Our keys.** We need two RSA key pairs: one to sign, one to decrypt. We publish the public halves at `/.well-known/jwks.json`, where itsme reads them. The private halves never leave the backend: in production they come from a keystore in a vault. When you run the sample locally, it generates throw-away keys at startup, and refuses to do so if an endpoint is not `localhost`. See the README's [Keys](../README.md#keys).
-
-**The fix.** Three small parts, each in its own place:
-
-1. **Client assertion:** Spring already supports `private_key_jwt`. We give its token client our signing key, and Spring builds and signs the assertion.
-2. **Request Object:** we wrap Spring's authorization request resolver. Spring still generates `state`, `nonce` and PKCE; we put everything in a JWT, sign it, encrypt it, and add it as the `request` parameter ([`ItsmeAuthorizationRequestResolver`](../src/main/java/com/example/voltahome/itsme/ItsmeAuthorizationRequestResolver.java), [`ItsmeRequestObjectFactory`](../src/main/java/com/example/voltahome/itsme/ItsmeRequestObjectFactory.java)).
-3. **ID token:** Spring's default decoder only verifies signatures. We replace the factory that builds it, in [`ItsmeClientConfig.idTokenDecoderFactory`](../src/main/java/com/example/voltahome/itsme/ItsmeClientConfig.java):
+**The fix.** We replace the factory that builds the decoder, in [`ItsmeClientConfig.idTokenDecoderFactory`](../src/main/java/com/example/voltahome/itsme/ItsmeClientConfig.java):
 
 ```java
 DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
-processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(      // 1. decrypt with OUR private key
-        JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A128CBC_HS256,
-        new ImmutableJWKSet<>(keys.encryptionKeySet())));
+processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(      // 1. decrypt with the shared key
+        JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
+        new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
 processor.setJWSKeySelector(new JWSVerificationKeySelector<>(    // 2. check ITSME's signature
         JWSAlgorithm.RS256, itsmeJwkSource));
 
@@ -118,23 +106,15 @@ decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
 
 Declaring the decoder factory as a bean is enough: `oauth2Login()` finds it and uses it instead of the default.
 
-**The check that is easy to forget.** Our encryption key is *public*. That is the point of a public key, but it also means anyone can encrypt a token for us. Nimbus would accept an encrypted token that is not signed inside. Only itsme's signature proves where the token comes from, so we refuse any token whose outer envelope does not announce a signed token inside (`cty: JWT`). That is one small method, [`ItsmeCrypto.requireNestedSignedJwt`](../src/main/java/com/example/voltahome/itsme/ItsmeCrypto.java), and one test, `encryptedButUnsignedTokenIsRejected`.
+**The check that is easy to forget.** Anyone who holds the client secret can encrypt a token for us. Nimbus would accept an encrypted token that is not signed inside. Only itsme's signature proves where the token comes from, so we refuse any token whose outer envelope does not announce a signed token inside (`cty: JWT`). That is one small method, [`ItsmeCrypto.requireNestedSignedJwt`](../src/main/java/com/example/voltahome/itsme/ItsmeCrypto.java), and one test, `encryptedButUnsignedTokenIsRejected`.
 
-**Check it yourself.** In `ItsmeLoginFlowTest`, two tests play itsme's role: they decrypt our Request Object and verify our client assertion with our public keys. The `IdTokenValidation` group builds tokens that are wrong in exactly one way: missing `acr`, wrong nonce, wrong issuer, another audience, expired, encrypted for another key, signed by a key itsme does not publish, not signed at all. Each one must be rejected.
+**If your registration signs with HS256.** itsme lets a client secret client choose RS256 or HS256. Prefer RS256. If HS256 cannot be changed, set `itsme.id-token-signature=HS256`: the decoder then checks an HMAC made with the secret's bytes as they are (OIDC Core §10.1), and only that algorithm. The cost: whoever holds the secret can also sign, so the proof of origin rests on the token coming straight from itsme's token endpoint over TLS.
 
-### If your itsme client uses a client secret
+**Keep the secret in a vault.** If it leaks, an intercepted authorization code can be exchanged and captured ID tokens can be decrypted. The README sums it up in [Client authentication](../README.md#client-authentication).
 
-itsme also offers a simpler method: a shared secret instead of key pairs. Some teams choose it because they cannot open an inbound route for their public keys. The sample supports it too: set `itsme.client-authentication=client-secret`, or run **VoltaHome (local, itsme stub, client secret)** in IntelliJ. Four things change:
+**Check it yourself.** In `ItsmeLoginFlowTest`, `tokenRequestUsesClientSecretPostAndPkce` reads the token request as itsme receives it. The `IdTokenValidation` group builds tokens that are wrong in exactly one way: missing `acr`, wrong nonce, wrong issuer, another audience, expired, encrypted with another secret, signed by a key itsme does not publish, signed with HS256 when RS256 is configured, not signed at all. Each one must be rejected.
 
-- **Token request:** `client_id` and `client_secret` in the body instead of a signed assertion. Spring does it without help.
-- **No Request Object:** `acr_values` and `claims` travel in the URL, where anyone can edit them.
-- **ID token decryption:** `dir` and `A256GCM`, with a key derived from the secret. The itsme pages do not say how; the OpenID Connect specification (§10.2) does: the SHA-256 hash of the secret. Confirm it in the itsme test environment on day one.
-- **The nested check matters just as much:** anyone holding the secret can encrypt a token, so only itsme's signature proves the origin.
-- **If your registration signs with HS256:** itsme lets a client secret client choose RS256 or HS256. Prefer RS256. If HS256 cannot be changed, set `itsme.id-token-signature=HS256`: the decoder then checks an HMAC made with the secret's bytes as they are (OIDC Core §10.1), and only that algorithm. The cost: whoever holds the secret can also sign, so the proof of origin rests on the token coming straight from itsme's token endpoint over TLS.
-
-The trade-off is real. If the secret leaks, an intercepted authorization code can be exchanged and captured ID tokens can be decrypted. With key pairs, there is no shared secret to leak. Choose key pairs when you can. The README compares both in [Two client authentication methods](../README.md#two-client-authentication-methods).
-
-> **Takeaway: sign with your private key, encrypt with theirs. Encryption hides the content; only the signature proves who wrote it.**
+> **Takeaway: encryption hides the content; only the signature proves who wrote it.**
 
 ## Default 2: the user is a pseudonym
 
@@ -142,17 +122,13 @@ The trade-off is real. If the secret leaks, an intercepted authorization code ca
 
 **Why it breaks with itsme.** itsme's email is whatever the person typed into their itsme app. itsme's own claims page says `email_verified` is always `false`, because email verification is not implemented. If we found the customer by that email, anyone could put their victim's address in their own itsme account and log in as the victim. That is not a weak design; it is an account takeover.
 
-So we ask itsme for no personal data at all. We use the `sub`: a stable, opaque id for one itsme account. It tells us *it is the same person as last time*, not *who they are for us*. So the sample authenticates; it does not identify. It logs in only customers whose itsme account is already linked to their VoltaHome account.
+So we ask itsme for no personal data, and no claim at all. We use the `sub`: a stable, opaque id for one itsme account. It tells us *it is the same person as last time*, not *who they are for us*. So the sample authenticates; it does not identify. It logs in only customers whose itsme account is already linked to their VoltaHome account.
 
 **The fix, part 1: look up the customer by `sub`.** We replace the user service with our own, [`ItsmeOidcUserService`](../src/main/java/com/example/voltahome/itsme/ItsmeOidcUserService.java). It never copies itsme's claims into the principal.
 
 ```java
 Optional<String> customerId = links.findCustomerBySub(sub);
 
-if (Boolean.TRUE.equals(idToken.getClaimAsBoolean(ItsmeClaims.ONGOING_CALL))) {
-    fraud.report(FraudSignal.ONGOING_CALL, customerId.orElse(null), sub);
-    throw failure("fraud_suspected");
-}
 if (customerId.isEmpty()) {
     throw failure("not_linked");                 // unknown: no identification, no login
 }
@@ -161,17 +137,13 @@ if (customers.findActiveById(customerId.get()).isEmpty()) {
 }
 ```
 
-`ongoing_call` deserves a word. itsme can tell us that a phone call was in progress while the user approved. That is the typical pattern of a phone scam where a fake advisor talks the victim through the approval, so we stop there.
-
 **The fix, part 2: refuse an unknown sub.** When the `sub` is not linked, the login stops with `not_linked`. It is tempting to ask the user who they are at that point, with an email address or a customer number. We do not: that is identification, a separate feature with its own risks. The README lists what adding it would take, in [Authentication, not identification](../README.md#authentication-not-identification).
 
 So where do links come from? Not from the login: it only reads them. In the sample they are test data. In a real application, a separate, deliberate step creates them, and the same step must handle one case itsme documents: a customer who re-creates their itsme account gets a new `sub`, and is refused until the link is renewed.
 
 ```mermaid
 flowchart TD
-    A[ID token valid] --> B{Phone call in progress?}
-    B -- yes --> R1[Reject: fraud_suspected<br/>fraud signal raised]
-    B -- no --> C{sub linked to a customer?}
+    A[ID token valid] --> C{sub linked to a customer?}
     C -- no --> R2[Reject: not_linked<br/>no identification, no link created]
     C -- yes --> D{Customer still active?}
     D -- no --> R3[Reject: no_customer<br/>contract closed]
@@ -185,10 +157,10 @@ An attacker who cannot link an account will try to make the login identify them 
 - **An itsme account nobody linked.** Refused with `not_linked`, and nothing is written to `itsme_link` (`unknownItsmeAccountIsRejected`).
 - **The victim's email in the attacker's itsme account.** Still `not_linked`: the email is never read (`unknownItsmeAccountIsNotIdentifiedByTheEmailItsmeSends`).
 - **Identity data itsme sends without being asked.** Not handed over: the login result carries our customer id, never a name or an email (`identityClaimsSentByItsmeAreNotHandedOver`).
-- **Someone adds an identity claim to the request later.** The tests list the requested claims and scopes exactly: `ongoing_call`, `openid` and the service scope, nothing else (`authorizationRequestAsksForFraudSignalsOnlyNoIdentityClaim`, for both client methods).
+- **Someone adds an identity claim to the request later.** The tests check the request exactly: no `claims` parameter, and only `openid` and the service scope (`authorizationRequestAsksForNoClaimAndNoIdentityScope`).
 - **A closed contract with a linked itsme account.** Refused with `no_customer` (`linkedButInactiveCustomerIsRejected`).
 
-**Check it yourself.** On the itsme stub page, look at the claims the application asked for: only `ongoing_call`. Then choose **Robin Dubois — linked, but contract closed**, and read the error page.
+**Check it yourself.** On the itsme stub page, look at the claims the application asked for: none. Then choose **Robin Dubois — linked, but contract closed**, and read the error page.
 
 > **Takeaway: never trust an identifier the user can type. Use the provider's pseudonym, and accept only one you already linked.**
 
@@ -237,9 +209,7 @@ So the callback hands over through the database once more, in three steps that a
 
 **Why it breaks with us.** In many companies, a backend cannot call the internet freely. Outgoing calls go through a proxy, and each destination is opened by an infrastructure team, on request, in advance. In that world, "the application follows" is a problem: an endpoint that moves is an endpoint the firewall blocks. And with `issuer-uri`, an unreachable itsme means an application that does not even start.
 
-**The fix, part 1: static endpoints.** We declare the itsme endpoints in configuration, per environment, and build the `ClientRegistration` ourselves. All backend calls go to a single host per environment, `idp.e2e.itsme.services` or `idp.prd.itsme.services`, so the request to the infrastructure team fits in one line.
-
-One flow goes the other way, and it is easy to forget in the request to the infrastructure team: **itsme calls us** to download our public keys at `/.well-known/jwks.json`. That URL must be public, served with an OV or EV certificate (itsme refuses domain-validated certificates such as Let's Encrypt), and must answer in under a second.
+**The fix, part 1: static endpoints.** We declare the itsme endpoints in configuration, per environment, and build the `ClientRegistration` ourselves. All backend calls go to a single host per environment, `idp.e2e.itsme.services` or `idp.prd.itsme.services`, so the request to the infrastructure team fits in one line. Nothing comes in: the application publishes no keys.
 
 **The fix, part 2: an explicit proxy.** Two clients leave the backend: Spring's `RestClient` for the token endpoint, and Nimbus's retriever for itsme's public keys. By default, both use the JVM-wide proxy settings. We give each of them the proxy explicitly instead. The route to itsme is then visible in the itsme configuration, it does not depend on settings shared with the rest of the JVM, and it can be changed without touching anything else.
 
@@ -253,25 +223,21 @@ One more reason to read the discovery document at least once: the itsme examples
 
 ## Bonus: what the browser can change
 
-The authorization request tells itsme two important things: which claims we want, and that we want `acr_advanced`, meaning the user must type their itsme code. A fingerprint alone is not enough.
+The authorization request tells itsme that we want `acr_advanced`, meaning the user must type their itsme code. A fingerprint alone is not enough.
 
-The authorization request travels through the browser's address bar, and anyone can edit an address bar. Without protection, removing `acr_values` from the URL would quietly lower the security level. That is why, with key pairs, these parameters travel only inside the Request Object: signed by us, so itsme notices any change; encrypted for itsme, so nobody can even read them on the way.
+The authorization request travels through the browser's address bar, and anyone can edit an address bar. Removing `acr_values` from the URL would quietly lower the security level, so we check the `acr` value *inside the ID token*, which itsme signs: [`AcrValidator`](../src/main/java/com/example/voltahome/itsme/AcrValidator.java) refuses a login without the itsme code.
 
-**Try it.** On the itsme stub page, add `&acr_values=x` to the address and reload. The stub tells you it ignores it: only the Request Object counts, as the OpenID Connect specification defines.
-
-**With a client secret, try the opposite.** Run the client secret configuration: there is no Request Object, so the parameters sit in the URL. Remove `acr_values` from the address, reload, and log in as Alex. itsme falls back to the basic level, and the login is refused. This time the `acr` check on the ID token is the only lock, and you just watched it hold.
-
-We still check the `acr` value *inside the ID token*. Two locks are better than one: if a configuration change ever stopped sending the Request Object, [`AcrValidator`](../src/main/java/com/example/voltahome/itsme/AcrValidator.java) would still refuse a login without the itsme code. The general rule: **anything that passes through the browser can be changed, so protect the request and check the response.**
+**Try it.** On the itsme stub page, remove `acr_values` from the address, reload, and log in as Alex. itsme falls back to the basic level, and the login is refused. The `acr` check on the ID token is the lock, and you just watched it hold. The general rule: **anything that passes through the browser can be changed, so check the response.**
 
 One honest caveat. The itsme v2 documentation describes `acr_values` in the request, but it does not show the `acr` claim in the ID token. Confirm it in the itsme test environment early. If itsme does not send it, this check rejects every login, and you will want to know that on day one, not in production.
 
 ## Proving it without itsme
 
-You cannot call itsme from a unit test, and most developers in a team will never hold the test credentials. So the sample uses two stand-ins, each for a different job. Both have their own key pairs and do the cryptography of the itsme side with the same class, `ItsmeStubCrypto`.
+You cannot call itsme from a unit test, and most developers in a team will never hold the test credentials. So the sample uses two stand-ins, each for a different job. Both have their own signing key and do the cryptography of the itsme side with the same class, `ItsmeStubCrypto`.
 
-**For automated tests: WireMock.** WireMock runs inside the test JVM and answers on itsme's back-channel URLs: the discovery document, itsme's public keys and the token endpoint. The token endpoint only answers a request that carries a client assertion and a PKCE `code_verifier`. Two tests then play itsme's role in full: they decrypt the Request Object we sent and verify our client assertion, with our public keys.
+**For automated tests: WireMock.** WireMock runs inside the test JVM and answers on itsme's back-channel URLs: the discovery document, itsme's public keys and the token endpoint. The token endpoint only answers a request that carries our client id and secret and a PKCE `code_verifier`.
 
-**For your browser: the itsme stub.** With the `local` profile, the application serves an itsme stand-in under `/itsme-stub`. It reads our public keys from `/.well-known/jwks.json`, like itsme would. It decrypts and verifies the Request Object, checks the redirect URI, PKCE, a single-use code valid for three minutes and the signed client assertion, and returns ID tokens encrypted for us. A guard stops the application if this profile is ever started with an endpoint that is not `localhost`.
+**For your browser: the itsme stub.** With the `local` profile, the application serves an itsme stand-in under `/itsme-stub`. It checks the redirect URI, PKCE, a single-use code valid for three minutes and the client secret, and returns ID tokens signed by its own key and encrypted with the key derived from the secret. A guard stops the application if this profile is ever started with an endpoint that is not `localhost`.
 
 ### The tests are a list of attacks
 
@@ -281,12 +247,11 @@ The most useful way to read the tests is as a list of things an attacker, or a b
 |---|---|
 | A forged `state`, or the same callback replayed | `authorization_request_not_found` |
 | Two callbacks at the same moment | Only one succeeds |
-| A token encrypted for another key, or signed by a key itsme does not publish | `invalid_id_token` |
+| A token encrypted with another secret, or signed by a key itsme does not publish | `invalid_id_token` |
 | A token encrypted for us but not signed | `invalid_id_token` |
 | A token for another client, from another issuer, or expired | `invalid_id_token` |
 | An old nonce | `invalid_nonce` |
 | A fingerprint-only approval | `invalid_id_token` |
-| A phone call during approval | `fraud_suspected` |
 | An itsme account that is not linked, even one carrying a victim's email | `not_linked` |
 
 Each test changes exactly one thing in an otherwise valid flow. That is what makes a failing test easy to read.
@@ -310,13 +275,13 @@ The sample is a reference, not a finished product. Before real customers use it,
 **Confirm in the itsme test environment.** The README keeps the full list in [Points to confirm in itsme E2E](../README.md#points-to-confirm-in-itsme-e2e):
 
 - The ID token contains the `acr` claim. The itsme documentation does not promise it.
-- The ID token format: encrypted with `RSA-OAEP-256` and `A128CBC-HS256`, signed with `RS256`. With a client secret: `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes. itsme lets you choose an RS256 or HS256 signature for this method: choose RS256 when you can; with HS256, set `itsme.id-token-signature=HS256` and confirm that itsme signs with the secret's bytes as they are.
-- itsme accepts the Request Object as the sample builds it.
+- The ID token format: encrypted with `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes, and signed with `RS256`. itsme lets you choose an RS256 or HS256 signature: choose RS256 when you can; with HS256, set `itsme.id-token-signature=HS256` and confirm that itsme signs with the secret's bytes as they are.
+- itsme accepts the confirmation's `free_text` template in the `claims` URL parameter, up to the longest text.
 - The exact `issuer` and `jwks_uri` values in each environment's discovery document.
 
-**Ask itsme during onboarding.** Give them the URL of your public keys and your redirect URI. Ask them to make PKCE mandatory for your client: the code sends it anyway, but enforcement on the itsme side refuses a request without PKCE, even if someone changes the code later.
+**Ask itsme during onboarding.** Give them your redirect URIs. Ask them to make PKCE mandatory for your client: the code sends it anyway, but enforcement on the itsme side refuses a request without PKCE, even if someone changes the code later.
 
-**Look after the keys.** Generate the two key pairs once, keep the private keys in a vault, and never in Git or a log. Plan the rotation before you need it: itsme caches your public keys for up to 24 hours, so a new encryption key must be published, and the old one kept able to decrypt, for at least that long.
+**Look after the secret.** Keep the client secret in a vault, never in Git or a log. Plan its rotation with itsme before you need it: the application must be restarted with the new value.
 
 **Decide how links are created.** The login only reads them. Linking an itsme account to a customer, the first time or after the customer re-created their itsme account, is a separate step with its own checks. If you add identification for it, the README lists what changes.
 
@@ -324,14 +289,14 @@ The sample is a reference, not a finished product. Before real customers use it,
 
 **Wire the alarms.** Send the `ERROR` from the discovery check and the fraud signals to the systems people actually watch.
 
-**Write the error messages.** The login error page receives a code such as `fraud_suspected`. Map each code to a message written by your team, and never display the raw parameter: it comes from the URL, so anyone can change it. The codes are listed in the README's [Error codes](../README.md#error-codes).
+**Write the error messages.** The login error page receives a code such as `not_linked`. Map each code to a message written by your team, and never display the raw parameter: it comes from the URL, so anyone can change it. The codes are listed in the README's [Error codes](../README.md#error-codes).
 
 ## The four defaults, in four lines
 
-1. **Everything is signed and encrypted:** sign with your private key, encrypt with theirs; replace the decoder factory, and check that the ID token is signed inside.
+1. **The ID token is encrypted:** replace the decoder factory, decrypt with the key derived from the secret, and check that the ID token is signed inside.
 2. **The user is a pseudonym:** look up the `sub`, never a typed email; accept only a `sub` you already linked.
 3. **There is no session:** replace five components, keep logins in progress in your database, and prove it with a test.
-4. **The network is locked:** configure endpoints and proxy explicitly, open the inbound route to your public keys, and use discovery as an alarm.
+4. **The network is locked:** configure endpoints and proxy explicitly, and use discovery as an alarm.
 
 Notice what we did *not* do: we never fought Spring Security or rewrote the OIDC flow. Each time, we found the assumption that did not hold, and replaced the smallest part that held it. That habit will serve you with any identity provider, not only itsme.
 

@@ -19,8 +19,8 @@ public final class ItsmeCrypto {
 
     /**
      * The ID token must be a nested JWT: an encrypted envelope (JWE header "cty": "JWT") with a SIGNED token inside.
-     * Encryption alone proves nothing about the origin: with key pairs our encryption key is public, and with the
-     * client secret method anyone holding the secret can encrypt. Only the signature inside proves the origin.
+     * Encryption alone proves nothing about the origin: anyone holding the client secret can encrypt. Only the
+     * signature inside proves the origin.
      */
     public static void requireNestedSignedJwt(String token) {
         try {
@@ -34,7 +34,7 @@ public final class ItsmeCrypto {
     }
 
     /**
-     * Client secret method only: ID token decryption key for "dir" + "A256GCM", derived from the client secret
+     * ID token decryption key for "dir" + "A256GCM", derived from the client secret
      * as defined in OpenID Connect Core §10.2 (left-truncated SHA-256 of the UTF-8 secret = 256 bits).
      * The itsme documentation does not describe the derivation: to be confirmed in E2E.
      */
@@ -48,7 +48,7 @@ public final class ItsmeCrypto {
     }
 
     /**
-     * Client secret method with itsme.id-token-signature=HS256 only: the key that verifies the ID token signature.
+     * With itsme.id-token-signature=HS256 only: the key that verifies the ID token signature.
      * OIDC Core §10.1: the HMAC key is the UTF-8 bytes of the client secret, used as they are (no derivation).
      * HS256 needs at least 256 bits (RFC 7518 §3.2); a shorter secret is refused at startup, not at the first login.
      */

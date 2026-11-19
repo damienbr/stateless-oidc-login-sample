@@ -4,8 +4,7 @@
 # this image) the wrapper downloads the .tar.gz instead, which fails that check.
 # The sources are mounted read-only and copied inside the container, so nothing is written to your checkout.
 #
-#   docker compose up demo                                   # browser demo, key pairs, http://localhost:8080
-#   docker compose --profile client-secret up demo-client-secret   # browser demo, client secret (same port)
+#   docker compose up demo                                   # browser demo, http://localhost:8080
 #   docker compose --profile verify run --rm verify          # build + all tests
 #
 # The itsme stub only runs with localhost endpoints and expects the application on http://localhost:8080:
@@ -29,16 +28,6 @@ services:
     command: [spring-boot:run]
     environment:
       SPRING_PROFILES_ACTIVE: local
-    ports:
-      - "8080:8080"
-
-  demo-client-secret:
-    <<: *maven
-    profiles: [client-secret]
-    command: [spring-boot:run]
-    environment:
-      SPRING_PROFILES_ACTIVE: local
-      ITSME_CLIENTAUTHENTICATION: client-secret
     ports:
       - "8080:8080"
 

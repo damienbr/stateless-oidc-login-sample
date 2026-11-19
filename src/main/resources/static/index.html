@@ -46,7 +46,6 @@
   </table>
   <h2>Orders and offers</h2>
   <p>You approve each one in the itsme app.</p>
-  <p id="unavailable" hidden><small>Confirming an operation with itsme needs the key pairs method.</small></p>
   <ul id="operations"></ul>
   <ul id="confirmed"></ul>
   <p><button type="button" id="logout">Log out</button></p>
@@ -68,10 +67,8 @@ const MESSAGES = {
   invalid_handover: 'This could not be completed in this browser. Please try again.',
   not_linked: 'This itsme account is not linked to a VoltaHome account.',
   no_customer: 'This VoltaHome account is no longer active.',
-  fraud_suspected: 'For your security, this has been blocked. Never share your codes over the phone.',
   wrong_customer: 'This confirmation was not started by you. Nothing was changed.',
   wrong_person: 'The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.',
-  confirmation_unavailable: 'Confirmation with itsme is not available in this configuration.',
   operation_not_found: 'This operation does not exist or can no longer be confirmed. Nothing was changed.',
   unknown_operation: 'This operation cannot be confirmed. Nothing was changed.'
 };
@@ -166,17 +163,14 @@ async function showPortal() {
   $('customer-id').textContent = data.customerId;
   $('level').textContent = data.authenticationLevel;
   $('expires-at').textContent = data.expiresAt;
-  $('unavailable').hidden = data.confirmationAvailable;
   for (const operation of data.operations) {
     const li = document.createElement('li');
     li.textContent = operation.description + ' ';
-    if (data.confirmationAvailable) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = operation.label;
-      button.addEventListener('click', () => startConfirmation(operation.action));
-      li.appendChild(button);
-    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = operation.label;
+    button.addEventListener('click', () => startConfirmation(operation.action));
+    li.appendChild(button);
     $('operations').appendChild(li);
   }
   for (const c of data.confirmed) {

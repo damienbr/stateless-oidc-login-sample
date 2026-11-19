@@ -3,6 +3,7 @@ package com.example.voltahome.itsme;
 import java.net.URI;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import com.example.voltahome.customer.CustomerRepository;
@@ -32,12 +33,14 @@ import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.oauth2.jwt.JwtDecoderFactory;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * README: "Confirmation of an operation". A logged-in customer approves one operation in the itsme app.
- * Same protocol as the login (state, nonce, PKCE, Request Object, token exchange, ID token checks: Spring's
+ * Same protocol as the login (state, nonce, PKCE, acr_values, token exchange, ID token checks: Spring's
  * OidcAuthorizationCodeAuthenticationProvider with our token client and decoder), with three differences:
- * - the Request Object carries the WYSIWYS text of the operation;
+ * - the "claims" parameter in the URL carries the WYSIWYS template with the text of the operation, and the "sub" of
+ *   the itsme account linked to the customer, so that itsme skips its identification page;
  * - the confirmation authenticates nobody: the result is never put in a security context;
  * - itsme returns no proof of what was approved, only an ID token. What makes the approval count is checked here:
  *   the itsme account that approved it is the one linked to the customer who started it, and the customer who
@@ -54,7 +57,7 @@ public class ItsmeConfirmationService {
     private final ItsmeProperties properties;
     private final ClientRegistration registration;
     private final DefaultOAuth2AuthorizationRequestResolver resolver;
-    private final ItsmeRequestObjectFactory requestObjects;
+    private final ObjectMapper json;
     private final JdbcConfirmationRequestRepository confirmations;
     private final OidcAuthorizationCodeAuthenticationProvider itsmeAnswer;
     private final ItsmeLinkRepository links;
@@ -63,7 +66,7 @@ public class ItsmeConfirmationService {
     private final ItsmeHandover handover;
     private final Clock clock;
 
-    public ItsmeConfirmationService(ItsmeProperties properties, ItsmeRequestObjectFactory requestObjects,
+    public ItsmeConfirmationService(ItsmeProperties properties, ObjectMapper json,
             JdbcConfirmationRequestRepository confirmations, ItsmeHandover handover,
             OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> itsmeTokenResponseClient,
             JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory,
@@ -72,8 +75,9 @@ public class ItsmeConfirmationService {
         this.registration = ItsmeClientConfig.confirmationRegistration(properties);
         this.resolver = new DefaultOAuth2AuthorizationRequestResolver(
                 new InMemoryClientRegistrationRepository(registration), "/itsme/confirmation");
-        this.resolver.setAuthorizationRequestCustomizer(OAuth2AuthorizationRequestCustomizers.withPkce());
-        this.requestObjects = requestObjects;
+        this.resolver.setAuthorizationRequestCustomizer(OAuth2AuthorizationRequestCustomizers.withPkce()
+                .andThen(builder -> builder.additionalParameters(params -> params.put("acr_values", properties.acr()))));
+        this.json = json;
         this.confirmations = confirmations;
         // Pass-through user service: the ID token is checked below, and nothing is kept as a principal
         this.itsmeAnswer = new OidcAuthorizationCodeAuthenticationProvider(itsmeTokenResponseClient,
@@ -87,32 +91,24 @@ public class ItsmeConfirmationService {
     }
 
     /**
-     * Key pairs only. itsme requires a signed Request Object for a confirmation, and without one the text to approve
-     * would travel in the URL, where it can be edited, with nothing in the answer to detect it.
-     */
-    public boolean isAvailable() {
-        return properties.usesKeyPairs();
-    }
-
-    /**
      * Step 1: the customer clicks "Confirm" in the SPA, which calls its API. Returns the itsme URL the SPA then sends
      * the browser to.
      * @param browserCodeChallenge the S256 hash of the browser code verifier the SPA keeps until step 3
      */
     public URI start(HttpServletRequest request, String customerId, ItsmeOperation operation,
                      String browserCodeChallenge) {
-        if (!isAvailable()) {
-            throw new ItsmeConfirmationException("confirmation_unavailable");
-        }
         if (!ItsmeHandover.isBrowserCodeChallenge(browserCodeChallenge)) {
             throw new ItsmeConfirmationException("invalid_request");
         }
-        if (links.findSubByCustomer(customerId).isEmpty()) {
-            throw new ItsmeConfirmationException("not_linked");     // nobody could confirm it
-        }
-        OAuth2AuthorizationRequest authorization = requestObjects.withRequestObject(
-                resolver.resolve(request, registration.getRegistrationId()),     // state, nonce, PKCE
-                ItsmeClaims.confirmation(operation.text()));
+        String linkedSub = links.findSubByCustomer(customerId)
+                .orElseThrow(() -> new ItsmeConfirmationException("not_linked"));     // nobody could confirm it
+        // state, nonce, PKCE, acr_values; then the text to approve and the itsme account expected to approve it.
+        // from() rebuilds the URI with the claims in it.
+        OAuth2AuthorizationRequest resolved = resolver.resolve(request, registration.getRegistrationId());
+        String claims = json.writeValueAsString(ItsmeClaims.confirmation(operation.text(), linkedSub));
+        OAuth2AuthorizationRequest authorization = OAuth2AuthorizationRequest.from(resolved)
+                .additionalParameters(params -> params.put("claims", claims))
+                .build();
         confirmations.save(new PendingConfirmation(authorization.getState(), customerId, operation,
                 authorization.getAttribute(OidcParameterNames.NONCE),
                 authorization.getAttribute(PkceParameterNames.CODE_VERIFIER)));
@@ -132,11 +128,6 @@ public class ItsmeConfirmationService {
         // 1. itsme's answer: error, state, token exchange, ID token (decryption, signature, iss, aud, exp, acr), nonce
         OidcIdToken idToken = itsmeAnswer(request, pending);
         String sub = idToken.getSubject();
-
-        if (Boolean.TRUE.equals(idToken.getClaimAsBoolean(ItsmeClaims.ONGOING_CALL))) {
-            fraud.report(FraudSignal.ONGOING_CALL, customerId, sub);
-            throw failure("fraud_suspected", null);
-        }
 
         // 2. Approved by the right person: the itsme account linked to this customer now, not another one
         Optional<String> linkedSub = links.findSubByCustomer(customerId);

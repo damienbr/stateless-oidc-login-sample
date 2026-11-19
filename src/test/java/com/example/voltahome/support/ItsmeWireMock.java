@@ -14,7 +14,6 @@ import java.util.Map;
 
 import com.example.voltahome.local.ItsmeStubCrypto;
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jwt.JWTClaimsSet;
 
 /**
@@ -49,9 +48,9 @@ public final class ItsmeWireMock {
                   "authorization_endpoint": "%1$s/authorization",
                   "token_endpoint": "%1$s/token",
                   "jwks_uri": "%1$s/jwks",
-                  "token_endpoint_auth_methods_supported": ["private_key_jwt", "client_secret_post"],
-                  "id_token_encryption_alg_values_supported": ["RSA-OAEP-256", "dir"],
-                  "id_token_encryption_enc_values_supported": ["A128CBC-HS256", "A256GCM"],
+                  "token_endpoint_auth_methods_supported": ["client_secret_post"],
+                  "id_token_encryption_alg_values_supported": ["dir"],
+                  "id_token_encryption_enc_values_supported": ["A256GCM"],
                   "id_token_signing_alg_values_supported": ["RS256", "HS256"]
                 }
                 """.formatted(wm.baseUrl() + "/v2");
@@ -59,23 +58,10 @@ public final class ItsmeWireMock {
     }
 
     /**
-     * The token stub only answers a request that carries a client assertion (private_key_jwt) and a PKCE
-     * code_verifier; otherwise WireMock answers 404 and the login fails. The assertion's signature is
-     * verified separately, in a test that reads the recorded request.
+     * The token stub only answers a request that carries client_id and client_secret in the body
+     * (client_secret_post) and a PKCE code_verifier; otherwise WireMock answers 404 and the login fails.
      */
-    public void stubToken(WireMockServer wm, String idToken) {
-        wm.stubFor(post("/v2/token")
-                .withRequestBody(containing("grant_type=authorization_code"))
-                .withRequestBody(containing("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"))
-                .withRequestBody(containing("client_assertion="))
-                .withRequestBody(containing("code_verifier="))
-                .willReturn(okJson("""
-                        {"access_token":"stub-access-token","token_type":"Bearer","expires_in":3600,"id_token":"%s"}
-                        """.formatted(idToken))));
-    }
-
-    /** Client secret method: the token request carries client_id and client_secret in the body. */
-    public void stubTokenForClientSecret(WireMockServer wm, String idToken, String clientSecret) {
+    public void stubToken(WireMockServer wm, String idToken, String clientSecret) {
         wm.stubFor(post("/v2/token")
                 .withRequestBody(containing("grant_type=authorization_code"))
                 .withRequestBody(containing("client_id=" + clientId))
@@ -86,14 +72,9 @@ public final class ItsmeWireMock {
                         """.formatted(idToken))));
     }
 
-    /** Key pairs method: the ID token is encrypted with the application's public key. */
-    public IdTokenBuilder idToken(String issuer, String nonce, RSAKey clientEncryptionKey) {
-        return new IdTokenBuilder(issuer, nonce, clientEncryptionKey, null);
-    }
-
-    /** Client secret method: the ID token is encrypted with a key derived from the client secret. */
-    public IdTokenBuilder idTokenForClientSecret(String issuer, String nonce, String clientSecret) {
-        return new IdTokenBuilder(issuer, nonce, null, clientSecret);
+    /** The ID token is encrypted with a key derived from the client secret. */
+    public IdTokenBuilder idToken(String issuer, String nonce, String clientSecret) {
+        return new IdTokenBuilder(issuer, nonce, clientSecret);
     }
 
     /** Fluent builder with valid defaults; each test changes only what it is about. */
@@ -104,35 +85,29 @@ public final class ItsmeWireMock {
         private String audience = clientId;
         private Instant issuedAt = Instant.now();
         private Duration validity = Duration.ofMinutes(5);
-        private RSAKey recipient;
         private String secret;
         private ItsmeStubCrypto signer = crypto;
         private String hs256Secret;
 
-        private IdTokenBuilder(String issuer, String nonce, RSAKey clientEncryptionKey, String clientSecret) {
+        private IdTokenBuilder(String issuer, String nonce, String clientSecret) {
             this.issuer = issuer;
-            this.recipient = clientEncryptionKey;
             this.secret = clientSecret;
             claims.put("sub", "stub-sub-alex");
             claims.put("nonce", nonce);
             claims.put("acr", ACR_ADVANCED);
-            claims.put("http://itsme.services/v2/claim/ongoing_call", false);
         }
 
         public IdTokenBuilder sub(String sub) { claims.put("sub", sub); return this; }
         public IdTokenBuilder acr(String acr) { return claim("acr", acr); }
-        public IdTokenBuilder ongoingCall(boolean value) { return claim("http://itsme.services/v2/claim/ongoing_call", value); }
         public IdTokenBuilder issuer(String value) { this.issuer = value; return this; }
         public IdTokenBuilder audience(String value) { this.audience = value; return this; }
         public IdTokenBuilder issuedAt(Instant value) { this.issuedAt = value; return this; }
         public IdTokenBuilder validity(Duration value) { this.validity = value; return this; }
-        /** Encrypt for another key than the application's. */
-        public IdTokenBuilder encryptedFor(RSAKey key) { this.recipient = key; this.secret = null; return this; }
         /** Encrypt with a key derived from another secret than the application's. */
-        public IdTokenBuilder encryptedWithSecret(String other) { this.secret = other; this.recipient = null; return this; }
+        public IdTokenBuilder encryptedWithSecret(String other) { this.secret = other; return this; }
         /** Sign with keys that are not the ones itsme publishes. */
         public IdTokenBuilder signedBy(ItsmeStubCrypto other) { this.signer = other; this.hs256Secret = null; return this; }
-        /** Client secret method: sign with HS256 and this secret instead of itsme's RSA key. */
+        /** Sign with HS256 and this secret instead of itsme's RSA key. */
         public IdTokenBuilder signedWithSecret(String value) { this.hs256Secret = value; return this; }
         /** Sign with itsme's RSA key (RS256), the default. */
         public IdTokenBuilder signedWithItsmeKey() { this.signer = crypto; this.hs256Secret = null; return this; }
@@ -149,19 +124,14 @@ public final class ItsmeWireMock {
 
         /** Expected itsme format: signed by itsme, then encrypted for the application. */
         public String build() {
-            if (secret != null && hs256Secret != null) {
-                return crypto.hs256SignedAndEncryptedWithSecret(claimsSet(), hs256Secret, secret);
-            }
-            return secret != null
-                    ? signer.signedAndEncryptedWithSecret(claimsSet(), secret)
-                    : signer.signedAndEncrypted(claimsSet(), recipient);
+            return hs256Secret != null
+                    ? crypto.hs256SignedAndEncryptedWithSecret(claimsSet(), hs256Secret, secret)
+                    : signer.signedAndEncryptedWithSecret(claimsSet(), secret);
         }
 
         /** Negative case: encrypted for the application but NOT signed. Must be rejected. */
         public String buildEncryptedButUnsigned() {
-            return secret != null
-                    ? crypto.encryptedButUnsignedWithSecret(claimsSet(), secret)
-                    : crypto.encryptedButUnsigned(claimsSet(), recipient);
+            return crypto.encryptedButUnsignedWithSecret(claimsSet(), secret);
         }
 
         private JWTClaimsSet claimsSet() {

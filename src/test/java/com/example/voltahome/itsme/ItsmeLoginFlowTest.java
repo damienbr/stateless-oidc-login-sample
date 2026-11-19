@@ -24,16 +24,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import com.example.voltahome.fraud.FraudService;
-import com.example.voltahome.fraud.FraudSignal;
 import com.example.voltahome.local.ItsmeStubCrypto;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.client.WireMock;
-import com.nimbusds.jose.jwk.KeyUse;
-import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
-import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
-import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -43,71 +37,62 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.oauth2.core.OAuth2AuthorizationException;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.util.UriComponentsBuilder;
 
-/** The itsme protocol, end to end against a WireMock itsme: keys, request, token, ID token, state. */
+/**
+ * The itsme protocol, end to end against a WireMock itsme: request, token, ID token, state. Client secret
+ * (client_secret_post), parameters in the URL, ID token encrypted with dir + A256GCM and signed with RS256.
+ */
 class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
 
     @Autowired JdbcAuthorizationRequestRepository authorizationRequests;
     @Autowired RestClient itsmeRestClient;
 
-    // ------------------------------------------------------------------ keys and what we send (README "Keys")
+    // ------------------------------------------------------------------ what we send (README "Authorization request")
 
     @Test
-    void jwksEndpointPublishesOnlyPublicKeys() throws Exception {
-        String body = mvc.perform(get("/.well-known/jwks.json"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-
-        assertThat(body).contains("\"use\":\"sig\"", "\"use\":\"enc\"");
-        assertThat(body).doesNotContain("\"d\":", "\"p\":", "\"q\":");   // RSA private parts
-    }
-
-    @Test
-    void authorizationRequestCarriesASignedAndEncryptedRequestObject() throws Exception {
+    void authorizationParametersTravelInTheUrl() throws Exception {
         StartedLogin started = startLogin();
+        MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(started.location()).build()
+                .getQueryParams();
 
         assertThat(started.location()).startsWith(itsme.baseUrl() + "/v2/authorization?");
-        assertThat(decode(started.location())).doesNotContain("acr_values=").contains("code_challenge_method=S256");
-
-        // What itsme does: decrypt with its private key, verify our signature with our public key
-        JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
-                new ImmutableJWKSet<>(keys.publicJwkSet()));
-        assertThat(ro.getIssuer()).isEqualTo(CLIENT_ID);
-        assertThat(ro.getAudience()).containsExactly(itsme.baseUrl() + "/v2");
-        assertThat(ro.getStringClaim("acr_values")).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
-        assertThat(ro.getStringClaim("state")).isEqualTo(started.state());
-        assertThat(ro.getStringClaim("nonce")).isEqualTo(started.nonce());
-        assertThat(ro.getStringClaim("code_challenge")).isNotBlank();
+        assertThat(decode(query.getFirst("acr_values"))).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
+        assertThat(query.getFirst("code_challenge_method")).isEqualTo("S256");
+        assertThat(query.getFirst("code_challenge")).isNotBlank();
     }
 
     @Test
-    void authorizationRequestAsksForFraudSignalsOnlyNoIdentityClaim() throws Exception {
-        JWTClaimsSet ro = stub.crypto().readRequestObject(startLogin().requestObject(),
-                new ImmutableJWKSet<>(keys.publicJwkSet()));
+    void authorizationRequestAsksForNoClaimAndNoIdentityScope() throws Exception {
+        MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(startLogin().location()).build()
+                .getQueryParams();
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> idTokenClaims = (Map<String, Object>) ro.getJSONObjectClaim("claims").get("id_token");
-        assertThat(idTokenClaims.keySet()).containsExactly(ItsmeClaims.ONGOING_CALL);
-        assertThat(ro.getStringClaim("scope").split(" ")).containsExactlyInAnyOrder("openid", "service:VOLTAHOME_LOGIN");
+        assertThat(query).doesNotContainKey("claims");
+        assertThat(decode(query.getFirst("scope")).split(" ")).containsExactlyInAnyOrder("openid", "service:VOLTAHOME_LOGIN");
     }
 
     @Test
-    void tokenRequestUsesASignedClientAssertionAndPkce() throws Exception {
+    void tokenRequestUsesClientSecretPostAndPkce() throws Exception {
         givenLinked("C-1001", "stub-sub-alex");
         login(t -> t.sub("stub-sub-alex")).andExpect(redirectedToLoginHandover());
 
-        String body = itsme.findAll(postRequestedFor(urlEqualTo("/v2/token"))).get(0).getBodyAsString();
-        Map<String, String> form = formParams(body);
-        assertThat(form).containsKey("code_verifier").doesNotContainKey("client_secret");
+        Map<String, String> form = formParams(
+                itsme.findAll(postRequestedFor(urlEqualTo("/v2/token"))).get(0).getBodyAsString());
+        assertThat(form).containsEntry("client_id", CLIENT_ID)
+                .containsEntry("client_secret", CLIENT_SECRET)
+                .containsKey("code_verifier")
+                .doesNotContainKey("client_assertion");
+    }
 
-        // What itsme does: verify the assertion with our public key
-        JWTClaimsSet assertion = stub.crypto().verifyClientAssertion(form.get("client_assertion"),
-                new ImmutableJWKSet<>(keys.publicJwkSet()));
-        assertThat(assertion.getIssuer()).isEqualTo(CLIENT_ID);
-        assertThat(assertion.getSubject()).isEqualTo(CLIENT_ID);
-        assertThat(assertion.getAudience()).contains(itsme.baseUrl() + "/v2/token");
-        assertThat(assertion.getJWTID()).isNotBlank();
+    @Test
+    void noPublicKeysArePublished() throws Exception {
+        // The application publishes no keys: the path is not opened, so it only leads to the login
+        MvcResult result = mvc.perform(get("/.well-known/jwks.json")).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isNotEqualTo(200);
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("\"keys\"");
     }
 
     // ------------------------------------------------------------------ customer mapping (README "Customer mapping")
@@ -163,16 +148,6 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             givenLinked("C-1003", "stub-sub-robin");
             login(t -> t.sub("stub-sub-robin")).andExpect(redirectedUrl("/login-error?error=no_customer"));
         }
-
-        @Test
-        void ongoingCallIsRejectedAndReported() throws Exception {
-            givenLinked("C-1001", "stub-sub-alex");
-            login(t -> t.sub("stub-sub-alex").ongoingCall(true))
-                    .andExpect(redirectedUrl("/login-error?error=fraud_suspected"));
-
-            assertThat(fraud.raisedSignals()).extracting(FraudService.RaisedSignal::signal)
-                    .containsExactly(FraudSignal.ONGOING_CALL);
-        }
     }
 
     // ------------------------------------------------------------------ ID token validation (README "ID token validation")
@@ -212,9 +187,8 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
-        void tokenEncryptedForAnotherKeyIsRejected() throws Exception {
-            var otherKey = new RSAKeyGenerator(2048).keyUse(KeyUse.ENCRYPTION).generate().toPublicJWK();
-            login(t -> t.encryptedFor(otherKey)).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
+        void tokenEncryptedWithAnotherSecretIsRejected() throws Exception {
+            login(t -> t.encryptedWithSecret("another-secret")).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
         }
 
         @Test
@@ -223,8 +197,14 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
+        void hs256TokenIsRejectedWhenRs256IsConfigured() throws Exception {
+            // Default itsme.id-token-signature=RS256: an HMAC made with the client secret is not accepted
+            login(t -> t.signedWithSecret(CLIENT_SECRET)).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
+        }
+
+        @Test
         void encryptedButUnsignedTokenIsRejected() throws Exception {
-            // Our encryption key is public: anyone can encrypt for us. Only itsme's signature proves the origin.
+            // Anyone holding the client secret can encrypt: only itsme's signature proves the origin
             StartedLogin started = startLogin();
             stubTokenEndpoint(idToken(started.nonce()).buildEncryptedButUnsigned());
 
@@ -251,12 +231,12 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             // itsme puts the description in "detail", not in the standard "error_description"
             itsme.stubFor(WireMock.post("/v2/token").willReturn(aResponse().withStatus(400)
                     .withHeader("Content-Type", "application/json")
-                    .withBody("{\"error\":\"unauthorized_client\",\"detail\":\"invalid client_assertion\"}")));
+                    .withBody("{\"error\":\"unauthorized_client\",\"detail\":\"invalid client_secret\"}")));
 
             assertThatThrownBy(() -> itsmeRestClient.post().uri(itsme.baseUrl() + "/v2/token").retrieve().toBodilessEntity())
                     .isInstanceOfSatisfying(OAuth2AuthorizationException.class, e -> {
                         assertThat(e.getError().getErrorCode()).isEqualTo("unauthorized_client");
-                        assertThat(e.getError().getDescription()).isEqualTo("invalid client_assertion");
+                        assertThat(e.getError().getDescription()).isEqualTo("invalid client_secret");
                     });
         }
 
@@ -360,9 +340,6 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             StartedLogin started = startLogin();
 
             assertThat(decode(started.location())).doesNotContain(BROWSER_CODE_CHALLENGE);
-            JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
-                    new ImmutableJWKSet<>(keys.publicJwkSet()));
-            assertThat(ro.toString()).doesNotContain(BROWSER_CODE_CHALLENGE);
             assertThat(jdbc.sql("SELECT browser_code_challenge FROM itsme_handover WHERE state = :state")
                     .param("state", started.state()).query(String.class).single()).isEqualTo(BROWSER_CODE_CHALLENGE);
         }

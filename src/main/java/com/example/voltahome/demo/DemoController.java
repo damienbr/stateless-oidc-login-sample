@@ -7,7 +7,6 @@ import java.util.List;
 
 import com.example.voltahome.customer.Customer;
 import com.example.voltahome.customer.CustomerRepository;
-import com.example.voltahome.itsme.ItsmeConfirmationService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 class DemoController {
 
     record Portal(String customerId, String displayName, String authenticationLevel, Instant loggedInAt,
-                  Instant expiresAt, boolean confirmationAvailable, List<Operation> operations,
+                  Instant expiresAt, List<Operation> operations,
                   List<Confirmed> confirmed) {}
 
     /** README: "Several operations, one callback". One button per open order or offer. */
@@ -38,16 +37,13 @@ class DemoController {
     record OfferView(String offerId, String description, BigDecimal pricePerKwh, String status) {}
 
     private final CustomerRepository customers;
-    private final ItsmeConfirmationService confirmation;
     private final DemoConfirmedOperations confirmedOperations;
     private final DemoOrderConfirmation orders;
     private final DemoOfferAcceptance offers;
 
-    DemoController(CustomerRepository customers, ItsmeConfirmationService confirmation,
-                   DemoConfirmedOperations confirmedOperations, DemoOrderConfirmation orders,
-                   DemoOfferAcceptance offers) {
+    DemoController(CustomerRepository customers, DemoConfirmedOperations confirmedOperations,
+                   DemoOrderConfirmation orders, DemoOfferAcceptance offers) {
         this.customers = customers;
-        this.confirmation = confirmation;
         this.confirmedOperations = confirmedOperations;
         this.orders = orders;
         this.offers = offers;
@@ -73,7 +69,7 @@ class DemoController {
                 .map(r -> new Confirmed(r.operationType(), r.operationReference(), r.confirmedAt()))
                 .toList();
         return new Portal(customerId, name, token.getClaimAsString("acr"), token.getIssuedAt(), token.getExpiresAt(),
-                confirmation.isAvailable(), operations, confirmed);
+                operations, confirmed);
     }
 
     /** One order, as stored now: after a confirmation, the SPA shows this, not a copy it kept (README: "Hand-over"). */

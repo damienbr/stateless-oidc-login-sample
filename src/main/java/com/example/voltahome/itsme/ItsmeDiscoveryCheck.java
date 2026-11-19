@@ -67,17 +67,11 @@ public class ItsmeDiscoveryCheck {
         compare(mismatches, "authorization_endpoint", e.authorizationUri(), d.get("authorization_endpoint"));
         compare(mismatches, "token_endpoint", e.tokenUri(), d.get("token_endpoint"));
         compare(mismatches, "jwks_uri", e.jwkSetUri(), d.get("jwks_uri"));
-        if (properties.usesKeyPairs()) {
-            requireSupported(mismatches, d, "token_endpoint_auth_methods_supported", "private_key_jwt");
-            requireSupported(mismatches, d, "id_token_encryption_alg_values_supported", "RSA-OAEP-256");
-            requireSupported(mismatches, d, "id_token_encryption_enc_values_supported", "A128CBC-HS256");
-        } else {
-            requireSupported(mismatches, d, "token_endpoint_auth_methods_supported", "client_secret_post");
-            requireSupported(mismatches, d, "id_token_encryption_alg_values_supported", "dir");
-            requireSupported(mismatches, d, "id_token_encryption_enc_values_supported", "A256GCM");
-            requireSupported(mismatches, d, "id_token_signing_alg_values_supported",
-                    properties.idTokenSignedWithSecret() ? "HS256" : "RS256");
-        }
+        requireSupported(mismatches, d, "token_endpoint_auth_methods_supported", "client_secret_post");
+        requireSupported(mismatches, d, "id_token_encryption_alg_values_supported", "dir");
+        requireSupported(mismatches, d, "id_token_encryption_enc_values_supported", "A256GCM");
+        requireSupported(mismatches, d, "id_token_signing_alg_values_supported",
+                properties.idTokenSignedWithSecret() ? "HS256" : "RS256");
 
         if (mismatches.isEmpty()) {
             log.info("itsme discovery check OK");

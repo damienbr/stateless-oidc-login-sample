@@ -2,7 +2,6 @@ package com.example.voltahome.itsme;
 
 import java.net.InetSocketAddress;
 import java.net.Proxy;
-import java.util.List;
 import java.util.Optional;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -11,7 +10,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties("itsme")
 public record ItsmeProperties(
         String clientId,
-        ClientAuthentication clientAuthentication,
         String clientSecret,
         IdTokenSignature idTokenSignature,
         String serviceCode,
@@ -19,23 +17,11 @@ public record ItsmeProperties(
         String acr,
         Endpoints endpoints,
         ProxySettings proxy,
-        Keys keys,
         Confirmation confirmation) {
 
     /**
-     * The two itsme client authentication methods. README: "Two client authentication methods".
-     * PRIVATE_KEY_JWT: key pairs, Request Object, ID token encrypted with our public key (recommended by itsme).
-     * CLIENT_SECRET: shared secret, parameters in the URL, ID token encrypted with a key derived from the secret.
-     */
-    public enum ClientAuthentication { PRIVATE_KEY_JWT, CLIENT_SECRET }
-
-    public boolean usesKeyPairs() {
-        return clientAuthentication != ClientAuthentication.CLIENT_SECRET;
-    }
-
-    /**
-     * Client secret method only: how itsme signs the ID token, as chosen when the client is registered at itsme.
-     * README: "Two client authentication methods". RS256 (default, recommended): itsme's private key, verified with
+     * How itsme signs the ID token, as chosen when the client is registered at itsme.
+     * README: "Client authentication". RS256 (default, recommended): itsme's private key, verified with
      * itsme's JWKS. HS256: an HMAC made with the client secret itself (OIDC Core §10.1); anyone who holds the secret
      * can make one, so use it only when the itsme registration cannot be changed to RS256.
      */
@@ -60,13 +46,6 @@ public record ItsmeProperties(
     }
 
     /**
-     * The application's own key pairs. In production: a PKCS12 keystore provided by a vault.
-     * "ephemeral" generates throw-away keys at startup: local development and tests only.
-     */
-    public record Keys(boolean ephemeral, String keystore, String keystorePassword,
-                       String signingAlias, List<String> encryptionAliases) {}
-
-    /**
      * README: "Confirmation of an operation". A separate itsme service, registered as a Confirmation service, with
      * its own redirect URI (/itsme/confirmation/callback).
      */
@@ -75,8 +54,8 @@ public record ItsmeProperties(
     /** Keeps secrets out of logs and actuator output. */
     @Override
     public String toString() {
-        return "ItsmeProperties[clientId=" + clientId + ", clientAuthentication=" + clientAuthentication
-                + ", idTokenSignature=" + idTokenSignature
-                + ", serviceCode=" + serviceCode + ", confirmation=" + confirmation + ", endpoints=" + endpoints + ", clientSecret=***, keystorePassword=***]";
+        return "ItsmeProperties[clientId=" + clientId + ", idTokenSignature=" + idTokenSignature
+                + ", serviceCode=" + serviceCode + ", confirmation=" + confirmation + ", endpoints=" + endpoints
+                + ", clientSecret=***]";
     }
 }

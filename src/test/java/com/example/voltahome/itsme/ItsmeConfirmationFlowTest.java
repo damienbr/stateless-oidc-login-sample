@@ -18,8 +18,6 @@ import com.example.voltahome.fraud.FraudSignal;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
-import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
-import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -32,6 +30,7 @@ import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
+import tools.jackson.databind.JsonNode;
 
 /**
  * README: "Confirmation of an operation", "Hand-over", "Several operations, one callback". Alex (C-1001, itsme account
@@ -60,56 +59,62 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     void portalListsTheOperationsOfTheCustomerOnly() throws Exception {
         String portal = portal(alex)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.confirmationAvailable").value(true))
                 .andReturn().getResponse().getContentAsString();
         assertThat(portal).contains("/api/orders/O-2001/confirm", "/api/offers/F-3001/accept")
                 .doesNotContain("O-2002", "F-3002");
     }
 
     @Test
-    void confirmationRequestCarriesTheTextToApproveInASignedAndEncryptedRequestObject() throws Exception {
+    void confirmationRequestCarriesTheTextToApproveInTheUrl() throws Exception {
         StartedConfirmation started = startConfirmation(alex);
+        MultiValueMap<String, String> query = query(started);
 
         assertThat(started.location()).startsWith(itsme.baseUrl() + "/v2/authorization?");
-        assertThat(decode(started.location())).doesNotContain("claims=", "acr_values=", "EUR", BROWSER_CODE_CHALLENGE);
-
-        // What itsme does: decrypt with its private key, verify our signature with our public key
-        JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
-                new ImmutableJWKSet<>(keys.publicJwkSet()));
-        assertThat(ro.getStringClaim("scope").split(" ")).containsExactlyInAnyOrder("openid", "service:VOLTAHOME_CONFIRM");
-        assertThat(ro.getStringClaim("redirect_uri")).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
-        assertThat(ro.getStringClaim("acr_values")).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
-        assertThat(ro.getStringClaim("state")).isEqualTo(started.state());
-        assertThat(ro.getStringClaim("nonce")).isEqualTo(started.nonce());
-        assertThat(ro.getStringClaim("code_challenge")).isNotBlank();
-        assertThat(ro.toString()).doesNotContain(BROWSER_CODE_CHALLENGE);     // the browser code challenge stays with us
+        assertThat(decode(query.getFirst("scope")).split(" ")).containsExactlyInAnyOrder("openid", "service:VOLTAHOME_CONFIRM");
+        assertThat(decode(query.getFirst("redirect_uri"))).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
+        assertThat(decode(query.getFirst("acr_values"))).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
+        assertThat(query.getFirst("code_challenge_method")).isEqualTo("S256");
+        assertThat(query.getFirst("code_challenge")).isNotBlank();
+        assertThat(decode(query.getFirst("claims"))).contains("Confirm order O-2001", "EUR 149.00");
+        assertThat(decode(started.location())).doesNotContain(BROWSER_CODE_CHALLENGE);   // stays with us
     }
 
     @Test
-    void confirmationRequestAsksForTheWysiwysTemplateAndFraudSignalsOnlyNoIdentityClaim() throws Exception {
-        JWTClaimsSet ro = stub.crypto().readRequestObject(startConfirmation(alex).requestObject(),
-                new ImmutableJWKSet<>(keys.publicJwkSet()));
+    void confirmationRequestAsksForTheWysiwysTemplateOnlyNoIdentityClaim() throws Exception {
+        JsonNode claims = json.readTree(decode(query(startConfirmation(alex)).getFirst("claims")));
+        JsonNode idTokenClaims = claims.get("id_token");
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> idTokenClaims = (Map<String, Object>) ro.getJSONObjectClaim("claims").get("id_token");
-        assertThat(idTokenClaims.keySet()).containsExactlyInAnyOrder(
-                ItsmeClaims.APPROVAL_TEMPLATE_NAME, ItsmeClaims.APPROVAL_TEXT, ItsmeClaims.ONGOING_CALL);
-        assertThat(idTokenClaims.get(ItsmeClaims.APPROVAL_TEMPLATE_NAME))
+        assertThat(claims.propertyNames()).containsExactlyInAnyOrder("id_token", "userinfo");
+        assertThat(claims.get("userinfo").propertyNames()).containsExactly("sub");    // a hint, see the next test
+        assertThat(idTokenClaims.propertyNames()).containsExactlyInAnyOrder(
+                ItsmeClaims.APPROVAL_TEMPLATE_NAME, ItsmeClaims.APPROVAL_TEXT);
+        assertThat(json.convertValue(idTokenClaims.get(ItsmeClaims.APPROVAL_TEMPLATE_NAME), Map.class))
                 .isEqualTo(Map.of("essential", true, "value", "free_text"));
-        assertThat(idTokenClaims.get(ItsmeClaims.APPROVAL_TEXT)).isEqualTo(Map.of("essential", true, "value",
+        assertThat(json.convertValue(idTokenClaims.get(ItsmeClaims.APPROVAL_TEXT), Map.class)).isEqualTo(Map.of(
+                "essential", true, "value",
                 "<b>VoltaHome</b><br>Customer number: C-1001<br>Confirm order O-2001: Smart thermostat<br>"
                         + "Total: <b>EUR 149.00</b>"));
     }
 
     @Test
-    void tokenRequestUsesTheConfirmationRedirectUriASignedClientAssertionAndPkce() throws Exception {
+    void confirmationRequestNamesTheItsmeAccountLinkedToTheCustomer() throws Exception {
+        // itsme skips its identification page for this account; it only reads the sub under "userinfo"
+        JsonNode claims = json.readTree(decode(query(startConfirmation(alex)).getFirst("claims")));
+
+        assertThat(json.convertValue(claims.get("userinfo"), Map.class))
+                .isEqualTo(Map.of("sub", Map.of("value", "stub-sub-alex")));
+    }
+
+    @Test
+    void tokenRequestUsesTheConfirmationRedirectUriClientSecretPostAndPkce() throws Exception {
         confirm(alex, t -> t).andExpect(status().isOk());
 
         List<LoggedRequest> requests = itsme.findAll(postRequestedFor(urlEqualTo("/v2/token")));
         Map<String, String> form = formParams(requests.get(requests.size() - 1).getBodyAsString());
         assertThat(form.get("redirect_uri")).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
-        assertThat(form).containsKey("code_verifier").doesNotContainKey("client_secret");
-        stub.crypto().verifyClientAssertion(form.get("client_assertion"), new ImmutableJWKSet<>(keys.publicJwkSet()));
+        assertThat(form).containsEntry("client_secret", CLIENT_SECRET)
+                .containsKey("code_verifier")
+                .doesNotContainKey("client_assertion");
     }
 
     @Test
@@ -207,16 +212,6 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
             assertThat(confirmedOperations.forCustomer("C-1002")).isEmpty();
             assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
-        }
-
-        @Test
-        void ongoingCallIsRejectedAndReported() throws Exception {
-            approve(alex, t -> t.ongoingCall(true))
-                    .andExpect(redirectedUrl("/confirmation-error?error=fraud_suspected"));
-
-            assertThat(codesWaiting()).isZero();
-            assertThat(fraud.raisedSignals()).singleElement()
-                    .satisfies(s -> assertThat(s.signal()).isEqualTo(FraudSignal.ONGOING_CALL));
         }
 
         @Test
@@ -381,9 +376,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         @Test
         void offerIsAcceptedThroughTheSameCallback() throws Exception {
             StartedConfirmation started = startConfirmation(alex, ACCEPT_OFFER);
-            JWTClaimsSet ro = stub.crypto().readRequestObject(started.requestObject(),
-                    new ImmutableJWKSet<>(keys.publicJwkSet()));
-            assertThat(ro.getStringClaim("redirect_uri")).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
+            assertThat(decode(query(started).getFirst("redirect_uri"))).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
             stubTokenEndpoint(idToken(started.nonce()).build());
             String code = handoverCode(confirmationCallback(started.state())
                     .andExpect(redirectedToConfirmationHandover()).andReturn());
@@ -576,7 +569,11 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     @Autowired JdbcConfirmationRequestRepository confirmationRequests;
     @Autowired ItsmeHandover handovers;
 
-    private record StartedConfirmation(String location, String state, String nonce, String requestObject) {}
+    private record StartedConfirmation(String location, String state, String nonce) {}
+
+    private static MultiValueMap<String, String> query(StartedConfirmation started) {
+        return UriComponentsBuilder.fromUriString(started.location()).build().getQueryParams();
+    }
 
     /** A complete login of the SPA: the token it keeps after the hand-over. */
     private String tokenOf(String sub) throws Exception {
@@ -599,8 +596,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         String location = json.readTree(body).get("redirect").asString();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(location).build().getQueryParams();
-        return new StartedConfirmation(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")),
-                decode(query.getFirst("request")));
+        return new StartedConfirmation(location, decode(query.getFirst("state")), decode(query.getFirst("nonce")));
     }
 
     private ResultActions start(String token, String startPath) throws Exception {

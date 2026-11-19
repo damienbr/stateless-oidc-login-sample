@@ -12,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.nimbusds.jose.EncryptionMethod;
 import com.nimbusds.jose.JWEAlgorithm;
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
@@ -27,7 +26,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.converter.FormHttpMessageConverter;
 import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
-import org.springframework.security.oauth2.client.endpoint.NimbusJwtClientAuthenticationParametersConverter;
 import org.springframework.security.oauth2.client.endpoint.OAuth2AccessTokenResponseClient;
 import org.springframework.security.oauth2.client.endpoint.OAuth2AuthorizationCodeGrantRequest;
 import org.springframework.security.oauth2.client.endpoint.RestClientAuthorizationCodeTokenResponseClient;
@@ -76,24 +74,16 @@ public class ItsmeClientConfig {
     private static ClientRegistration registration(ItsmeProperties p, String registrationId,
                                                    String serviceCode, String redirectUri) {
         ItsmeProperties.Endpoints e = p.endpoints();
-        ClientRegistration.Builder itsme = ClientRegistration.withRegistrationId(registrationId)
-                .clientId(p.clientId());
-        if (p.usesKeyPairs()) {
-            if (p.idTokenSignedWithSecret()) {
-                throw new IllegalStateException("itsme.id-token-signature=HS256 requires itsme.client-authentication=client-secret");
-            }
-            itsme.clientAuthenticationMethod(ClientAuthenticationMethod.PRIVATE_KEY_JWT);
-        } else {
-            if (p.clientSecret() == null || p.clientSecret().isBlank()) {
-                throw new IllegalStateException("itsme.client-secret is required with itsme.client-authentication=client-secret");
-            }
-            if (p.idTokenSignedWithSecret()) {
-                ItsmeCrypto.idTokenSignatureKey(p.clientSecret());   // refuses a secret too short for HS256, now
-            }
-            itsme.clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)   // client_id + client_secret in the body
-                    .clientSecret(p.clientSecret());
+        if (p.clientSecret() == null || p.clientSecret().isBlank()) {
+            throw new IllegalStateException("itsme.client-secret is required");
         }
-        itsme
+        if (p.idTokenSignedWithSecret()) {
+            ItsmeCrypto.idTokenSignatureKey(p.clientSecret());   // refuses a secret too short for HS256, now
+        }
+        return ClientRegistration.withRegistrationId(registrationId)
+                .clientId(p.clientId())
+                .clientSecret(p.clientSecret())
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)   // client_id + client_secret in the body
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
                 .redirectUri(redirectUri)
                 .scope("openid", "service:" + serviceCode)
@@ -101,8 +91,8 @@ public class ItsmeClientConfig {
                 .authorizationUri(e.authorizationUri())
                 .tokenUri(e.tokenUri())
                 .jwkSetUri(e.jwkSetUri())
-                .userNameAttributeName(IdTokenClaimNames.SUB);
-        return itsme.build();
+                .userNameAttributeName(IdTokenClaimNames.SUB)
+                .build();
     }
 
     /** README: "Token request". RestClient with an explicit outbound proxy (token endpoint, discovery check). */
@@ -141,30 +131,18 @@ public class ItsmeClientConfig {
     }
 
     /**
-     * README: "Token request". Used by the login and by the confirmation. Spring adds the PKCE code_verifier in both
-     * methods.
-     * - Key pairs (private_key_jwt): Spring builds and signs the client assertion (iss, sub, aud = token endpoint,
-     *   jti, iat, exp) with our signing key.
-     * - Client secret: Spring sends client_id and client_secret in the body; nothing to add.
+     * README: "Token request". Used by the login and by the confirmation. Spring sends client_id and client_secret
+     * in the body (client_secret_post) and the PKCE code_verifier; nothing to add.
      */
     @Bean
     OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> itsmeTokenResponseClient(
-            RestClient itsmeRestClient, ItsmeKeys keys, ItsmeProperties properties) {
+            RestClient itsmeRestClient) {
         RestClientAuthorizationCodeTokenResponseClient client = new RestClientAuthorizationCodeTokenResponseClient();
         client.setRestClient(itsmeRestClient);
-        if (properties.usesKeyPairs()) {
-            client.addParametersConverter(new NimbusJwtClientAuthenticationParametersConverter<>(
-                    registration -> isItsme(registration) ? keys.signingKey() : null));
-        }
         return client;
     }
 
-    private static boolean isItsme(ClientRegistration registration) {
-        return REGISTRATION_ID.equals(registration.getRegistrationId())
-                || CONFIRMATION_REGISTRATION_ID.equals(registration.getRegistrationId());
-    }
-
-    /** itsme public keys (signature of ID tokens, encryption of Request Objects), through the proxy, cached by Nimbus. */
+    /** itsme public keys (signature of ID tokens with RS256), through the proxy, cached by Nimbus. */
     @Bean
     JWKSource<SecurityContext> itsmeJwkSource(ItsmeProperties p) throws MalformedURLException {
         DefaultResourceRetriever retriever = new DefaultResourceRetriever(5_000, 5_000, 512 * 1024);
@@ -175,27 +153,20 @@ public class ItsmeClientConfig {
     }
 
     /**
-     * README: "ID token validation". Spring's default decoder cannot decrypt JWE tokens. Expected formats:
-     * - key pairs: JWE (RSA-OAEP-256, A128CBC-HS256, our public key) containing a JWS (RS256, itsme's key);
-     * - client secret: JWE (dir, A256GCM, key derived from the secret) containing a JWS (RS256, itsme's key),
-     *   or, only with itsme.id-token-signature=HS256, a JWS (HS256, the client secret itself).
-     * Exactly one signature algorithm is accepted, never both: README: "Two client authentication methods".
+     * README: "ID token validation". Spring's default decoder cannot decrypt JWE tokens. Expected format: a JWE
+     * (dir, A256GCM, key derived from the client secret) containing a JWS signed with RS256 (itsme's key) or, only
+     * with itsme.id-token-signature=HS256, with HS256 (the client secret itself).
+     * Exactly one signature algorithm is accepted, never both: README: "Client authentication".
      */
     @Bean
-    JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory(ItsmeProperties properties, ItsmeKeys keys,
+    JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory(ItsmeProperties properties,
                                                                 JWKSource<SecurityContext> itsmeJwkSource) {
         Map<String, JwtDecoder> cache = new ConcurrentHashMap<>();
         return registration -> cache.computeIfAbsent(registration.getRegistrationId(), id -> {
             DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
-            if (properties.usesKeyPairs()) {
-                processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(          // 1. decrypt with our private key
-                        JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A128CBC_HS256,
-                        new ImmutableJWKSet<>(keys.encryptionKeySet())));
-            } else {
-                processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(          // 1. decrypt with the shared key
-                        JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
-                        new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
-            }
+            processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(              // 1. decrypt with the shared key
+                    JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
+                    new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
             if (properties.idTokenSignedWithSecret()) {
                 processor.setJWSKeySelector(new SingleKeyJWSKeySelector<>(           // 2. verify the HMAC (client secret)
                         JWSAlgorithm.HS256, ItsmeCrypto.idTokenSignatureKey(properties.clientSecret())));

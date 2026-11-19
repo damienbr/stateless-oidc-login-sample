@@ -40,7 +40,6 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()
-                .requestMatchers("/.well-known/jwks.json").permitAll()                 // itsme reads our public keys
                 .requestMatchers("/itsme/login/handover").permitAll()                  // code + verifier
                 .requestMatchers("/itsme/confirmation/callback").permitAll()           // "state"; executes nothing
                 .anyRequest().authenticated())

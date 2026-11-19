@@ -2,8 +2,6 @@ package com.example.voltahome.local;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.util.List;
-
 import com.example.voltahome.itsme.ItsmeProperties;
 import org.junit.jupiter.api.Test;
 
@@ -12,12 +10,11 @@ class ItsmeStubGuardTest {
 
     @Test
     void itsmeStubIsRefusedWithARealItsmeEndpoint() {
-        ItsmeProperties properties = new ItsmeProperties("demo-client", ItsmeProperties.ClientAuthentication.PRIVATE_KEY_JWT,
-                null, null, "VOLTAHOME_LOGIN", "https://portal.voltahome.example/login/oauth2/code/itsme",
+        ItsmeProperties properties = new ItsmeProperties("demo-client", "local-development-secret", null,
+                "VOLTAHOME_LOGIN", "https://portal.voltahome.example/login/oauth2/code/itsme",
                 "http://itsme.services/v2/claim/acr_advanced",
                 new ItsmeProperties.Endpoints("https://idp.e2e.itsme.services/v2", null, null, null, null),
                 new ItsmeProperties.ProxySettings("", 0),
-                new ItsmeProperties.Keys(true, null, null, null, List.of()),
                 new ItsmeProperties.Confirmation("VOLTAHOME_CONFIRM", "https://portal.voltahome.example/itsme/confirmation/callback"));
 
         assertThatThrownBy(() -> new ItsmeStubGuard(properties))

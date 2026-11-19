@@ -6,7 +6,7 @@ import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.Jwt;
 
 /**
- * README: "ID token validation". Without a Request Object, acr_values can be removed from the browser URL:
+ * README: "ID token validation". acr_values travels in the browser URL, where it can be removed:
  * this check on the ID token is the guarantee that the itsme code was used.
  * Open point: confirm in E2E that itsme returns the "acr" claim.
  */

@@ -15,7 +15,7 @@
     <artifactId>stateless-oidc-login-sample</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>VoltaHome itsme login sample</name>
-    <description>Reference implementation of an itsme (OIDC v2) login with Spring Security, key pairs or client secret, stateless backend</description>
+    <description>Reference implementation of an itsme (OIDC v2) login with Spring Security, client secret, stateless backend</description>
 
     <properties>
         <java.version>17</java.version>

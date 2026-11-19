@@ -70,7 +70,6 @@ An application may have several `SecurityFilterChain` beans. For each request, S
 The list of access rules, read from top to bottom; the first matching rule wins:
 
 - `requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()`: the SPA's page and its error routes are public;
-- `requestMatchers("/.well-known/jwks.json").permitAll()`: itsme must be able to download our public keys without logging in;
 - `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the browser code verifier protect it (README: "Hand-over");
 - `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential, is protected by `state`, and executes nothing;
 - `anyRequest().authenticated()`: everything else requires a logged-in user.
@@ -113,10 +112,7 @@ The place where Spring looks up a `ClientRegistration` by its id. The in-memory 
 
 **`ClientAuthenticationMethod`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
-How our backend proves its identity to itsme when it asks for the token. The sample supports two values (README: "Two client authentication methods"):
-
-- `PRIVATE_KEY_JWT`: we send a short JWT signed with our private key (the *client assertion*);
-- `CLIENT_SECRET_POST`: we send our client id and a shared secret in the request body.
+How our backend proves its identity to itsme when it asks for the token. The sample uses `CLIENT_SECRET_POST`: we send our client id and the shared secret in the request body (README: "Client authentication").
 
 **`AuthorizationGrantType.AUTHORIZATION_CODE`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
@@ -142,12 +138,7 @@ The authorization request as an object: the itsme URL to redirect to, our client
 
 **`OAuth2AuthorizationRequestResolver`** (Spring interface) and **`ItsmeAuthorizationRequestResolver`** (ours) — *file: `itsme/ItsmeAuthorizationRequestResolver.java`*
 
-A resolver answers one question: "for this incoming request, what authorization request should we send?" Our resolver starts from Spring's result, then adds what itsme needs:
-
-- with key pairs, a **Request Object**: the parameters packed into a JWT signed by us and encrypted for itsme, created by `ItsmeRequestObjectFactory`;
-- with a client secret, the `acr_values` and `claims` parameters directly in the URL.
-
-Because `OAuth2AuthorizationRequest` cannot be modified, `finish(...)` builds a new one with the extra `request` parameter.
+A resolver answers one question: "for this incoming request, what authorization request should we send?" Our resolver lets Spring's resolver build it, with a customizer that adds the `acr_values` parameter (the level we require) to the URL. The login sends no `claims` parameter. `finish(...)` then begins the hand-over with the SPA's browser code challenge (README: "Hand-over").
 
 **`DefaultOAuth2AuthorizationRequestResolver`** (Spring) — *file: `itsme/ItsmeAuthorizationRequestResolver.java`*
 
@@ -155,11 +146,7 @@ Spring's standard resolver. It already generates the random `state` and `nonce`.
 
 **`OAuth2AuthorizationRequestCustomizers.withPkce()`** (Spring) — *file: `itsme/ItsmeAuthorizationRequestResolver.java`*
 
-A ready-made customizer that adds PKCE to the request: it generates a secret `code_verifier`, keeps it as an attribute, and sends its SHA-256 hash (`code_challenge`) to itsme. At the token request, only the holder of the verifier can use the code. Customizers can be chained with `andThen(...)`, which is how the client secret mode adds `acr_values` and `claims`.
-
-**`ItsmeRequestObjectFactory`** (ours) — *file: `itsme/ItsmeRequestObjectFactory.java`*
-
-Not a Spring extension point, but it reads the `OAuth2AuthorizationRequest` that Spring prepared and turns it into the signed and encrypted Request Object (with Nimbus, the JWT library). It is listed here because it is called from the resolver above.
+A ready-made customizer that adds PKCE to the request: it generates a secret `code_verifier`, keeps it as an attribute, and sends its SHA-256 hash (`code_challenge`) to itsme. At the token request, only the holder of the verifier can use the code. Customizers can be chained with `andThen(...)`, which is how the resolver adds `acr_values`.
 
 ## 6. Remembering the login in progress
 
@@ -191,15 +178,11 @@ All the classes below are plugged into steps 2 and 3.
 
 **`OAuth2AccessTokenResponseClient`, `OAuth2AuthorizationCodeGrantRequest`** (Spring) — *file: `itsme/ItsmeClientConfig.java`, method `itsmeTokenResponseClient`*
 
-The *token response client* is the component that sends the `POST` to itsme's token endpoint. The grant request is its input: the client registration, plus the authorization request and the response received at the callback (the code). The sample declares its own client to control the HTTP connection and the client authentication.
+The *token response client* is the component that sends the `POST` to itsme's token endpoint. The grant request is its input: the client registration, plus the authorization request and the response received at the callback (the code). The sample declares its own client to control the HTTP connection.
 
 **`RestClientAuthorizationCodeTokenResponseClient`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
 Spring's standard token client, based on Spring's `RestClient`. The sample gives it its own `RestClient` (`itsmeRestClient`), configured with the outbound proxy and timeouts (design rule 9), and a limited, explicit list of message converters.
-
-**`NimbusJwtClientAuthenticationParametersConverter`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
-
-Used only with key pairs. Before the token request is sent, it builds and signs the *client assertion*: a short JWT that proves to itsme that the request comes from us. We only give it our signing key; Spring fills in the claims (`iss`, `sub`, `aud`, `jti`, `iat`, `exp`).
 
 **`OAuth2AccessTokenResponseHttpMessageConverter`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
@@ -219,7 +202,7 @@ Spring asks this factory "give me the decoder for the ID tokens of this provider
 
 **`JwtDecoder`, `NimbusJwtDecoder`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
-A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (with our private key, or with the key derived from the client secret), then verify itsme's signature with itsme's public keys (RS256). For a client secret registered at itsme with HS256 (`itsme.id-token-signature: HS256`), step two checks an HMAC made with the client secret instead, through Nimbus `SingleKeyJWSKeySelector`; only one of the two algorithms is ever accepted. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
+A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (dir / A256GCM, with the key derived from the client secret), then verify itsme's signature with itsme's public keys (RS256). For a client registered at itsme with HS256 (`itsme.id-token-signature: HS256`), step two checks an HMAC made with the client secret instead, through Nimbus `SingleKeyJWSKeySelector`; only one of the two algorithms is ever accepted. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
 
 **`BadJwtException`** (Spring) — *file: `itsme/ItsmeCrypto.java`*
 
@@ -247,7 +230,7 @@ The standard OpenID Connect checks: the token was issued by itsme (`iss` equals 
 
 **`AcrValidator`** (ours) — *file: `itsme/AcrValidator.java`*
 
-Checks that the `acr` claim is the authentication level we require (`acr_advanced`: the customer typed their itsme code). With a client secret, the requested level travels in the browser URL, where it can be edited; this check on the signed answer is what guarantees the level was really used. Design rule 3 says it must stay. The tests `basicAcrIsRejected` show the attack it stops.
+Checks that the `acr` claim is the authentication level we require (`acr_advanced`: the customer typed their itsme code). The requested level travels in the browser URL, where it can be edited; this check on the signed answer is what guarantees the level was really used. Design rule 3 says it must stay. The tests `basicAcrIsRejected` show the attack it stops.
 
 ## 9. Turning the ID token into a user
 
@@ -258,9 +241,8 @@ At this point, Spring holds an ID token it trusts. It now asks a *user service* 
 The user service receives the checked ID token and returns the user, or throws an exception to refuse the login. Spring's default (`OidcUserService`) copies every claim of the token into the user and may call the provider's UserInfo endpoint. Ours does something different, because the login only *authenticates* a customer we already know (README: "Authentication, not identification"):
 
 1. looks up the customer by the itsme `sub` in `itsme_link`;
-2. refuses the login if itsme reports an ongoing phone call (`fraud_suspected`);
-3. refuses an unknown `sub` (`not_linked`) or an inactive customer (`no_customer`);
-4. builds a user that contains only the `sub` and our customer id, never the raw token or other itsme claims (design rule 7).
+2. refuses an unknown `sub` (`not_linked`) or an inactive customer (`no_customer`);
+3. builds a user that contains only the `sub` and our customer id, never the raw token or other itsme claims (design rule 7).
 
 **`OidcUserRequest`** (Spring) — the input of the user service: the client registration, the access token and the checked `OidcIdToken`.
 
@@ -270,7 +252,7 @@ The user service receives the checked ID token and returns the user, or throws a
 
 **`SimpleGrantedAuthority`** (Spring) — a role or permission given to the user, here `ROLE_ITSME_USER`. Access rules can test it (for example `hasRole("ITSME_USER")`); the sample has none, but the authority states how the user logged in.
 
-**`OAuth2AuthenticationException`** (Spring) — the exception that refuses an OAuth 2 login. It carries an `OAuth2Error` whose code (`not_linked`, `fraud_suspected`, ...) reaches the failure handler and becomes the `error` parameter of the error page.
+**`OAuth2AuthenticationException`** (Spring) — the exception that refuses an OAuth 2 login. It carries an `OAuth2Error` whose code (`not_linked`, `no_customer`, ...) reaches the failure handler and becomes the `error` parameter of the error page.
 
 ## 10. The end of the login: success or failure
 
@@ -326,7 +308,7 @@ Remember that everything in this section is a demo stand-in. A real application 
 
 ## 12. Confirming an operation from the portal
 
-A logged-in customer clicks "Confirm order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, Request Object, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
+A logged-in customer clicks "Confirm order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, `acr_values`, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
@@ -338,7 +320,7 @@ A second registration with the same client id, the confirmation's itsme service 
 
 **`DefaultOAuth2AuthorizationRequestResolver`** and **`OAuth2AuthorizationRequestCustomizers.withPkce()`** (Spring) — *file: `itsme/ItsmeConfirmationService.java`*
 
-The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), given an `InMemoryClientRegistrationRepository` that holds only the confirmation registration. It generates `state`, `nonce` and PKCE. `ItsmeRequestObjectFactory.withRequestObject` then adds the Request Object, with the text to approve in its `claims`.
+The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), given an `InMemoryClientRegistrationRepository` that holds only the confirmation registration. It generates `state`, `nonce` and PKCE, and a customizer adds `acr_values`. `start` then adds the `claims` parameter, with the `free_text` template, the text to approve and the `sub` linked to the customer: `OAuth2AuthorizationRequest.from(...)` copies the request without its URI, so `build()` writes a new URI that includes `claims`.
 
 **`JdbcConfirmationRequestRepository`** (ours) — *file: `itsme/JdbcConfirmationRequestRepository.java`*
 
@@ -386,7 +368,6 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `ItsmeLoginFailureHandler` | ours | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginFailureHandler.java` |
 | `ItsmeLoginSuccessHandler` | ours | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginSuccessHandler.java` |
 | `ItsmeOidcUserService` | ours | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |
-| `ItsmeRequestObjectFactory` | ours | [5](#5-step-one-sending-the-customer-to-itsme) | `itsme/ItsmeRequestObjectFactory.java` |
 | `ItsmeStubSecurityConfig` | ours (local) | [1](#1-building-the-filter-chain) | `local/ItsmeStubSecurityConfig.java` |
 | `JdbcAuthorizationRequestRepository` | ours | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java` |
 | `JdbcConfirmationRequestRepository` | ours | [12](#12-confirming-an-operation-from-the-portal) | `itsme/JdbcConfirmationRequestRepository.java` |
@@ -398,7 +379,6 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `JwtTimestampValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
 | `LoginHandover` | ours | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/LoginHandover.java` |
 | `MacAlgorithm` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoToken.java` |
-| `NimbusJwtClientAuthenticationParametersConverter` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java` |
 | `NimbusJwtDecoder` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
 | `NoOpAuthorizedClientRepository` | ours | [3](#3-staying-stateless) | `itsme/NoOpAuthorizedClientRepository.java` |
 | `NullRequestCache` | Spring | [3](#3-staying-stateless) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |
@@ -407,7 +387,7 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `OAuth2AuthenticationException` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeLoginFailureHandler.java`, `itsme/ItsmeConfirmationService.java` |
 | `OAuth2AuthorizationCodeGrantRequest` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java`, `security/SecurityConfig.java`, `itsme/ItsmeConfirmationService.java` |
 | `OAuth2AuthorizationExchange` | Spring | [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeConfirmationService.java` |
-| `OAuth2AuthorizationRequest` | Spring | [5](#5-step-one-sending-the-customer-to-itsme), [12](#12-confirming-an-operation-from-the-portal) | `itsme/` (resolver, repository, Request Object factory, confirmation service) |
+| `OAuth2AuthorizationRequest` | Spring | [5](#5-step-one-sending-the-customer-to-itsme), [12](#12-confirming-an-operation-from-the-portal) | `itsme/` (resolver, repository, confirmation service) |
 | `OAuth2AuthorizationRequestCustomizers` | Spring | [5](#5-step-one-sending-the-customer-to-itsme), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeAuthorizationRequestResolver.java`, `itsme/ItsmeConfirmationService.java` |
 | `OAuth2AuthorizationRequestRedirectFilter` | Spring | [5](#5-step-one-sending-the-customer-to-itsme) | added by `oauth2Login()`; constant used in the resolver |
 | `OAuth2AuthorizationRequestResolver` | Spring | [5](#5-step-one-sending-the-customer-to-itsme) | `itsme/ItsmeAuthorizationRequestResolver.java` |
