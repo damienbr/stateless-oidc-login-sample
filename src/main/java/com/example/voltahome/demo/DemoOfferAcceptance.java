@@ -57,6 +57,13 @@ class DemoOfferAcceptance implements ConfirmableOperation {
                 .update() == 1;
     }
 
+    /** The same DTO as GET /api/offers/{id}. */
+    @Override
+    public Optional<DemoController.OfferDto> dto(String customerId, String offerId) {
+        return find(customerId, offerId)
+                .map(o -> new DemoController.OfferDto(o.offerId(), o.description(), o.pricePerKwh(), o.status()));
+    }
+
     List<Offer> openOffers(String customerId) {
         return jdbc.sql("SELECT * FROM offer WHERE customer_id = :customer AND status = 'OPEN' ORDER BY offer_id")
                 .param("customer", customerId)
@@ -65,7 +72,7 @@ class DemoOfferAcceptance implements ConfirmableOperation {
                 .list();
     }
 
-    /** The offer of this customer, whatever its status: what the SPA reloads after a confirmation. */
+    /** The offer of this customer, whatever its status. */
     Optional<Offer> find(String customerId, String offerId) {
         return jdbc.sql("SELECT * FROM offer WHERE offer_id = :id AND customer_id = :customer")
                 .param("id", offerId)

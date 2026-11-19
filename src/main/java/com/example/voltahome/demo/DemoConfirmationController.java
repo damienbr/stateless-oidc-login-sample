@@ -35,8 +35,12 @@ class DemoConfirmationController {
     /** The one-time code from the URL fragment, and the browser code verifier. */
     record RedeemRequest(String handover, String browserCodeVerifier) {}
 
-    /** What was executed: the SPA reloads that record from the API to show it (README: "Hand-over"). */
-    record Redeemed(String operationType, String operationReference) {}
+    /**
+     * What was executed, and the DTO of the record as stored after the execution: the same DTO as GET
+     * /api/orders/{id} or GET /api/offers/{id} (README: "Hand-over"). The DTO is null if the record could not be read
+     * any more: the SPA then reloads it by type and reference.
+     */
+    record Redeemed(String operationType, String operationReference, Object dto) {}
 
     private final ItsmeConfirmationService confirmation;
     private final ConfirmableOperations operations;
@@ -74,7 +78,8 @@ class DemoConfirmationController {
                     token.getSubject());
             operations.execute(confirmed);
             confirmedOperations.record(confirmed);           // stands in for the audit trail
-            return ResponseEntity.ok(new Redeemed(confirmed.operationType(), confirmed.operationReference()));
+            return ResponseEntity.ok(new Redeemed(confirmed.operationType(), confirmed.operationReference(),
+                    operations.dto(confirmed).orElse(null)));
         } catch (ItsmeConfirmationException e) {
             return error(e.code());
         } catch (OperationException e) {

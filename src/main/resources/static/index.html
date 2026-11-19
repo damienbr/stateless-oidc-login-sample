@@ -8,8 +8,8 @@
     verifier itself: it binds the end of the flow to this browser. (Not PKCE's code_verifier: that one stays between
     the backend and itsme.)
   - Server data is always written with textContent, never as HTML.
-  - After a confirmation, the SPA reloads the confirmed record from the API, by the type and reference the redemption
-    returns. Nothing about the order or offer is kept in the browser during the itsme round trip.
+  - After a confirmation, the SPA shows the DTO the redemption returns: the record as stored on the server after
+    the execution. Nothing about the order or offer is kept in the browser during the itsme round trip.
 -->
 <html lang="en">
 <head>
@@ -73,7 +73,8 @@ const MESSAGES = {
   unknown_operation: 'This operation cannot be confirmed. Nothing was changed.'
 };
 
-// README: "Several operations, one callback". Where the SPA reloads a confirmed record, by its type.
+// README: "Several operations, one callback". Where the SPA reloads a DTO by its type, when the redemption's
+// answer carries none (and where a real SPA reloads it after a page refresh).
 const RECORDS = { order: '/api/orders/', offer: '/api/offers/' };
 
 const $ = id => document.getElementById(id);
@@ -140,18 +141,23 @@ async function startConfirmation(action) {
 }
 
 // Step 3: the backend sent the browser back to "/#confirmation=<code>". Redeeming executes the operation; the answer
-// says which one, and the SPA reloads that record from the API to show it as it is now.
+// says which one and carries its DTO, as stored after the execution.
 async function redeemConfirmation(code) {
   const { status, data } = await api('POST', '/api/confirmation/redeem', { handover: code, browserCodeVerifier: takeVerifier() });
   if (status === 401) { show('Your session has expired. Nothing was changed.', 'error'); return; }
   if (status !== 200) { showError(data.error); return; }
-  const path = RECORDS[data.operationType];
-  const record = path ? await api('GET', path + encodeURIComponent(data.operationReference)) : { status: 404 };
-  if (record.status === 200) {
-    show('Confirmed: ' + record.data.description + ' (' + record.data.status.toLowerCase() + ').', 'notice');
+  const dto = data.dto || await reload(data.operationType, data.operationReference);
+  if (dto) {
+    show('Confirmed: ' + dto.description + ' (' + dto.status.toLowerCase() + ').', 'notice');
   } else {
     show('The operation was confirmed.', 'notice');
   }
+}
+
+async function reload(type, reference) {
+  if (!RECORDS[type]) { return null; }
+  const { status, data } = await api('GET', RECORDS[type] + encodeURIComponent(reference));
+  return status === 200 ? data : null;
 }
 
 // ---------------------------------------------------------------- pages

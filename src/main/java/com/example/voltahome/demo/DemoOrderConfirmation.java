@@ -57,6 +57,13 @@ class DemoOrderConfirmation implements ConfirmableOperation {
                 .update() == 1;
     }
 
+    /** The same DTO as GET /api/orders/{id}. */
+    @Override
+    public Optional<DemoController.OrderDto> dto(String customerId, String orderId) {
+        return find(customerId, orderId)
+                .map(o -> new DemoController.OrderDto(o.orderId(), o.description(), o.amount(), o.status()));
+    }
+
     List<Order> openOrders(String customerId) {
         return jdbc.sql("""
                 SELECT * FROM customer_order WHERE customer_id = :customer AND status = 'OPEN' ORDER BY order_id
@@ -67,7 +74,7 @@ class DemoOrderConfirmation implements ConfirmableOperation {
                 .list();
     }
 
-    /** The order of this customer, whatever its status: what the SPA reloads after a confirmation. */
+    /** The order of this customer, whatever its status. */
     Optional<Order> find(String customerId, String orderId) {
         return jdbc.sql("SELECT * FROM customer_order WHERE order_id = :id AND customer_id = :customer")
                 .param("id", orderId)

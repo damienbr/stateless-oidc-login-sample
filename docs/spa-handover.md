@@ -127,15 +127,27 @@ Content-Type: application/json
 
 | Answer | Meaning |
 |---|---|
-| `200 {"operationType": "order", "operationReference": "O-2001"}` | Confirmed and executed. Reload that record (below) |
+| `200 {"operationType": "order", "operationReference": "O-2001", "dto": {...}}` | Confirmed and executed. `dto` is the order or offer as stored after the execution (below) |
 | `400 {"error": "invalid_handover"}` | Too late, already used, or another browser. Nothing was changed |
 | `400 {"error": "wrong_customer"}` | Started by another customer. Nothing was changed |
 | `400 {"error": "operation_not_found"}` | The record changed in the meantime (for example, already confirmed). Nothing was changed |
 | `401` | The token has expired. Nothing was changed |
 
-### 4. Show the result: reload the record from the server
+### 4. Show the result: the DTO comes from the server
 
-Leaving for itsme unloads the SPA: everything held in JavaScript memory is gone when the customer comes back, on `/`. Do not try to keep the screen's state in the browser. Rebuild it from the server:
+Leaving for itsme unloads the SPA: everything held in JavaScript memory is gone when the customer comes back, on `/`. Do not try to keep the screen's state in the browser. The redemption's answer carries what the screen needs:
+
+```json
+{
+  "operationType": "order",
+  "operationReference": "O-2001",
+  "dto": {"orderId": "O-2001", "description": "Smart thermostat", "amount": 149.00, "status": "CONFIRMED"}
+}
+```
+
+`dto` is read on the server after the execution, for the customer of the token. Its fields depend on `operationType`: they are the ones of the matching `GET` below.
+
+The redemption works once: the code is single use. After a page refresh, or if `dto` is `null`, reload the record by its type and reference:
 
 | `operationType` | Reload with |
 |---|---|

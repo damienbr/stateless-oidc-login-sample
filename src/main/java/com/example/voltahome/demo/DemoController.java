@@ -32,9 +32,9 @@ class DemoController {
 
     record Confirmed(String operationType, String operationReference, Instant confirmedAt) {}
 
-    record OrderView(String orderId, String description, BigDecimal amount, String status) {}
+    record OrderDto(String orderId, String description, BigDecimal amount, String status) {}
 
-    record OfferView(String offerId, String description, BigDecimal pricePerKwh, String status) {}
+    record OfferDto(String offerId, String description, BigDecimal pricePerKwh, String status) {}
 
     private final CustomerRepository customers;
     private final DemoConfirmedOperations confirmedOperations;
@@ -74,15 +74,13 @@ class DemoController {
 
     /** One order, as stored now: after a confirmation, the SPA shows this, not a copy it kept (README: "Hand-over"). */
     @GetMapping(value = "/api/orders/{orderId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    ResponseEntity<OrderView> order(@PathVariable String orderId, @AuthenticationPrincipal Jwt token) {
-        return ResponseEntity.of(orders.find(token.getSubject(), orderId)
-                .map(o -> new OrderView(o.orderId(), o.description(), o.amount(), o.status())));
+    ResponseEntity<OrderDto> order(@PathVariable String orderId, @AuthenticationPrincipal Jwt token) {
+        return ResponseEntity.of(orders.dto(token.getSubject(), orderId));
     }
 
     /** One offer, as stored now. */
     @GetMapping(value = "/api/offers/{offerId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    ResponseEntity<OfferView> offer(@PathVariable String offerId, @AuthenticationPrincipal Jwt token) {
-        return ResponseEntity.of(offers.find(token.getSubject(), offerId)
-                .map(o -> new OfferView(o.offerId(), o.description(), o.pricePerKwh(), o.status())));
+    ResponseEntity<OfferDto> offer(@PathVariable String offerId, @AuthenticationPrincipal Jwt token) {
+        return ResponseEntity.of(offers.dto(token.getSubject(), offerId));
     }
 }

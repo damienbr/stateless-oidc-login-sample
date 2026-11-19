@@ -384,7 +384,9 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             redeem(alex, code, BROWSER_CODE_VERIFIER)
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.operationType").value("offer"))
-                    .andExpect(jsonPath("$.operationReference").value("F-3001"));
+                    .andExpect(jsonPath("$.operationReference").value("F-3001"))
+                    .andExpect(jsonPath("$.dto.offerId").value("F-3001"))
+                    .andExpect(jsonPath("$.dto.status").value("ACCEPTED"));
 
             assertThat(offerStatus("F-3001")).isEqualTo("ACCEPTED");
             assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
@@ -484,8 +486,28 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
+        void redemptionReturnsTheDtoAsStoredAfterTheExecution() throws Exception {
+            // The same DTO as GET /api/orders/{id}, read for the customer of the confirmation after the update
+            confirm(alex, t -> t)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.dto.orderId").value("O-2001"))
+                    .andExpect(jsonPath("$.dto.description").value("Smart thermostat"))
+                    .andExpect(jsonPath("$.dto.amount").value(149.00))
+                    .andExpect(jsonPath("$.dto.status").value("CONFIRMED"));
+        }
+
+        @Test
+        void refusedRedemptionReturnsNoDto() throws Exception {
+            String code = handoverCode(approve(alex, t -> t).andReturn());
+
+            redeem(alex, code, ANOTHER_BROWSER_CODE_VERIFIER)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.dto").doesNotExist());
+        }
+
+        @Test
         void confirmedOrderIsReloadedAsStoredNow() throws Exception {
-            // What the SPA does after the redemption: reload the record by the type and reference it returned
+            // What the SPA does after a page refresh: reload the record by its type and reference
             confirm(alex, t -> t).andExpect(status().isOk());
 
             mvc.perform(withToken(get("/api/orders/O-2001"), alex))
