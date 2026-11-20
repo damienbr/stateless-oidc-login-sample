@@ -6,7 +6,8 @@ package com.example.voltahome.itsme;
  * when it is confirmed: they tell the application which operation to execute (README: "Several operations, one
  * callback"). The itsme client does not interpret them.
  * @param type      the kind of operation, for example "order"
- * @param reference the id of the record to execute, for example the order id
+ * @param reference what the application needs to find the operation again: the id of the pending operation it
+ *                  persisted when the confirmation started
  * @param text      exactly what the itsme app shows to the customer
  */
 public record ItsmeOperation(String type, String reference, ItsmeFreeText text) {}

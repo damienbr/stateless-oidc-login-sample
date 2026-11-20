@@ -33,7 +33,7 @@ class ItsmeLoginHandoverController {
     @PostMapping(value = "/itsme/login/handover", consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<Object> redeem(@RequestBody HandoverRequest body) {
-        return handover.redeem(body.handover(), body.browserCodeVerifier(),
+        return handover.redeem(ItsmeHandover.Flow.LOGIN, body.handover(), body.browserCodeVerifier(),
                         ItsmeLoginResult.class)
                 .<ResponseEntity<Object>>map(result -> ResponseEntity.ok()
                         .cacheControl(CacheControl.noStore())        // the body carries the application's token

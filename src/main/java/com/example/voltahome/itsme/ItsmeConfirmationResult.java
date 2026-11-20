@@ -6,7 +6,8 @@ import java.time.Instant;
  * README: "Confirmation of an operation". A confirmed operation, as stored when it was started: nothing in it comes
  * from the callback URL, and it carries no itsme claim. itsme returns no proof of what was shown, so this record
  * (who, what, when, at which level) is the application's evidence; keep it in the audit trail of the operation.
- * operationType and operationReference say which operation to execute (README: "Several operations, one callback").
+ * operationType and operationReference say which operation to execute: the reference is the id of the pending
+ * operation the application persisted at the start (README: "Several operations, one callback").
  */
 public record ItsmeConfirmationResult(String customerId, String operationType, String operationReference,
                                       String approvalText,

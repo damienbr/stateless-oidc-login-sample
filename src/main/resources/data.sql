@@ -8,10 +8,10 @@ MERGE INTO itsme_link (customer_id, itsme_sub, linked_at, last_login_at) KEY (cu
     ('C-1001', 'stub-sub-alex',  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
     ('C-1003', 'stub-sub-robin', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
--- DEMO ONLY: one open order and one open offer per active customer.
-MERGE INTO customer_order (order_id, customer_id, description, amount, status) KEY (order_id) VALUES
-    ('O-2001', 'C-1001', 'Smart thermostat', 149.00, 'OPEN'),
-    ('O-2002', 'C-1002', 'Smart thermostat', 149.00, 'OPEN');
+-- DEMO ONLY: a product to order (the order itself is created by its confirmation), and one open offer per active
+-- customer.
+MERGE INTO product (product_code, description, price) KEY (product_code) VALUES
+    ('P-100', 'Smart thermostat', 149.00);
 
 MERGE INTO offer (offer_id, customer_id, description, price_per_kwh, status) KEY (offer_id) VALUES
     ('F-3001', 'C-1001', 'Fixed electricity price for 12 months', 0.2850, 'OPEN'),

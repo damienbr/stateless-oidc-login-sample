@@ -34,12 +34,12 @@ CREATE INDEX IF NOT EXISTS ix_itsme_authreq_expires ON itsme_authorization_reque
 -- Confirmation in progress (README: "Confirmation of an operation"): who started it, what is to be approved, and the
 -- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation executed at the callback is
 -- never read from the callback URL: its type and reference (README: "Several operations, one callback") are read
--- from here.
+-- from here. The reference is the id of the pending operation (pending_operation, below).
 CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
     state               VARCHAR(128)   PRIMARY KEY,
     customer_id         VARCHAR(64)    NOT NULL,
     operation_type      VARCHAR(32)    NOT NULL,
-    operation_reference VARCHAR(128)   NOT NULL,
+    operation_reference VARCHAR(128)   NOT NULL,   -- pending_operation.operation_id
     approval_text       VARCHAR(7500)  NOT NULL,
     nonce               VARCHAR(128)   NOT NULL,
     code_verifier       VARCHAR(128)   NOT NULL,
@@ -48,28 +48,51 @@ CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_confreq_expires ON itsme_confirmation_request (expires_at);
 
--- Hand-over of the login to the SPA (README: "Hand-over"), one row per login:
--- 1. begin:    the SPA's browser code challenge (S256 of its browser code verifier), stored under the login's state;
+-- Hand-over to the SPA (README: "Hand-over"), one row per itsme flow, for the login and the confirmation alike:
+-- 1. begin:    the SPA's browser code challenge (S256 of its browser code verifier), stored under the flow's state;
 -- 2. complete: once the callback has checked everything, the result (JSON) and a one-time code;
 -- 3. redeem:   the SPA posts the code and its browser code verifier; the row is deleted (single use).
 -- Not to be confused with PKCE's code_challenge and code_verifier, between the backend and itsme.
 CREATE TABLE IF NOT EXISTS itsme_handover (
     state       VARCHAR(128)   PRIMARY KEY,
+    flow        VARCHAR(16)    NOT NULL,          -- LOGIN or CONFIRMATION
     browser_code_challenge VARCHAR(64) NOT NULL,
     code        VARCHAR(64)    UNIQUE,            -- set by complete
-    result      VARCHAR(2000),                    -- set by complete (JSON: ItsmeLoginResult); no itsme claim
+    result      VARCHAR(2000),                    -- set by complete (JSON); our own data, no itsme claim
     expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_handover_expires ON itsme_handover (expires_at);
 
--- DEMO ONLY (README: "Several operations, one callback"). Orders and offers of the fictitious energy supplier, which a
--- customer confirms with itsme. In a real application these tables already exist.
+-- Operations waiting for their confirmation in itsme (README: "Several operations, one callback"). The record to
+-- create may not exist yet (an order is only created once confirmed): everything needed to execute the operation is
+-- persisted here when the confirmation starts, and reloaded, for the same customer and type, once itsme has confirmed.
+-- The data is a JSON document, written and read by the operation of that type. Stored as text: no database-specific
+-- JSON type. Single use (deleted when executed), 10 minutes.
+CREATE TABLE IF NOT EXISTS pending_operation (
+    operation_id    VARCHAR(64)    PRIMARY KEY,
+    customer_id     VARCHAR(64)    NOT NULL,
+    operation_type  VARCHAR(32)    NOT NULL,
+    data            VARCHAR(4000)  NOT NULL,     -- JSON
+    expires_at      TIMESTAMP      NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pending_operation_expires ON pending_operation (expires_at);
+
+-- DEMO ONLY (README: "Several operations, one callback"). Products, orders and offers of the fictitious energy
+-- supplier. In a real application these tables already exist.
+-- An order does not exist before its confirmation: a row is inserted in customer_order, from the data of its
+-- pending operation, once itsme has confirmed. An offer exists before, and is accepted by a confirmation.
+CREATE TABLE IF NOT EXISTS product (
+    product_code  VARCHAR(64)    PRIMARY KEY,
+    description   VARCHAR(256)   NOT NULL,
+    price         DECIMAL(10, 2) NOT NULL      -- EUR
+);
+
 CREATE TABLE IF NOT EXISTS customer_order (
     order_id     VARCHAR(64)    PRIMARY KEY,
     customer_id  VARCHAR(64)    NOT NULL,
     description  VARCHAR(256)   NOT NULL,
     amount       DECIMAL(10, 2) NOT NULL,      -- EUR
-    status       VARCHAR(16)    NOT NULL       -- OPEN, CONFIRMED
+    status       VARCHAR(16)    NOT NULL       -- CONFIRMED
 );
 
 CREATE TABLE IF NOT EXISTS offer (

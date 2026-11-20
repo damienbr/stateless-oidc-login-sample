@@ -9,8 +9,7 @@ import java.nio.charset.Charset;
  * Built only through the builder, which emits those tags and nothing else. Text containing '<', '>' or '&' is refused
  * instead of escaped: the itsme documentation does not say whether entities such as {@code &amp;} are decoded, and the
  * customer must read exactly what the application means. Control characters (tab, line feed, ...) are refused too: a
- * line break is {@code <br>}, and the documentation does not say how raw ones are shown. This also bounds the text
- * once stored as JSON with the result of the confirmation (schema.sql, itsme_handover.result).
+ * line break is {@code <br>}, and the documentation does not say how raw ones are shown.
  */
 public final class ItsmeFreeText {
 

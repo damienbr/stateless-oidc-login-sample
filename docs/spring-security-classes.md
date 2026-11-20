@@ -70,7 +70,7 @@ An application may have several `SecurityFilterChain` beans. For each request, S
 The list of access rules, read from top to bottom; the first matching rule wins:
 
 - `requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()`: the SPA's page and its error routes are public;
-- `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the browser code verifier protect it (README: "Hand-over");
+- `requestMatchers("/itsme/login/handover", "/itsme/confirmation/handover").permitAll()`: the SPA redeems its one-time code there, without a token (before it has one, or when the one it has may have expired); the code and the browser code verifier protect it (README: "Hand-over");
 - `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential and is protected by the single-use `state`, which only a call with the customer's token can create (README: "Confirmation of an operation");
 - `anyRequest().authenticated()`: everything else requires a logged-in user.
 
@@ -308,11 +308,11 @@ Remember that everything in this section is a demo stand-in. A real application 
 
 ## 12. Confirming an operation from the portal
 
-A logged-in customer clicks "Confirm order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, `acr_values`, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
+A logged-in customer clicks "Order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, `acr_values`, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the login's hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
-Two methods. `start` (the SPA's API call, with the customer's token) builds the authorization request and stores the confirmation in progress. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer; after Spring's checks, the service makes the check that decides whether the approval counts: the itsme account that approved it is the one linked to the customer who started it. Then it has the operation executed, through `ConfirmedOperationExecutor`, the boundary with the application (as `LoginHandover` is for the login). There is no hand-over here: nothing secret has to reach the browser (README: "Hand-over").
+Two methods. `start` (the SPA's API call, with the customer's token and the SPA's browser code challenge) builds the authorization request, stores the confirmation in progress with the type and reference of the operation, and begins the hand-over (`ItsmeHandover.begin`). `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer; after Spring's checks, the service makes the check that decides whether the approval counts: the itsme account that approved it is the one linked to the customer who started it. Then it has the operation executed, through `ConfirmedOperationExecutor`, the boundary with the application, and completes the hand-over (`ItsmeHandover.complete`): the callback redirects to the SPA with a one-time code. The SPA redeems it at `ItsmeConfirmationHandoverController` (`POST /itsme/confirmation/handover`), which calls `ConfirmationHandover`, the counterpart of `LoginHandover`: the application issues a new token there (README: "Hand-over"). The operation is executed at the callback, whether the code is redeemed or not.
 
 **`ClientRegistration`, built by `ItsmeClientConfig.confirmationRegistration`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
@@ -324,7 +324,7 @@ The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), 
 
 **`JdbcConfirmationRequestRepository`** (ours) — *file: `itsme/JdbcConfirmationRequestRepository.java`*
 
-Not a Spring interface: the confirmation is not handled by `oauth2Login()`, so nothing calls an `AuthorizationRequestRepository`. It stores the same protocol values as [section 6](#6-remembering-the-login-in-progress), plus the customer and the operation, in `itsme_confirmation_request`, with the same read-then-checked-delete.
+Not a Spring interface: the confirmation is not handled by `oauth2Login()`, so nothing calls an `AuthorizationRequestRepository`. It stores the same protocol values as [section 6](#6-remembering-the-login-in-progress), plus the customer and the operation (its type, and its reference: the id of the pending operation the application persisted, since the record to create may not exist yet), in `itsme_confirmation_request`, with the same read-then-checked-delete.
 
 **`OidcAuthorizationCodeAuthenticationProvider`** (Spring) — *file: `itsme/ItsmeConfirmationService.java`*
 
@@ -354,6 +354,7 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `ClientAuthenticationMethod` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
 | `ClientRegistration` | Spring | [4](#4-describing-itsme-to-spring), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeClientConfig.java` |
 | `ClientRegistrationRepository` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
+| `ConfirmationHandover` | ours | [12](#12-confirming-an-operation-from-the-portal) | `itsme/ConfirmationHandover.java` |
 | `DefaultOAuth2AuthorizationRequestResolver` | Spring | [5](#5-step-one-sending-the-customer-to-itsme), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeAuthorizationRequestResolver.java`, `itsme/ItsmeConfirmationService.java` |
 | `DefaultOidcUser` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeConfirmationService.java` |
 | `BearerTokenAuthenticationFilter` | Spring | [11](#11-after-the-login-the-protected-api) | added by `oauth2ResourceServer()` in `demo/DemoSecurityConfig.java` |

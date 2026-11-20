@@ -4,71 +4,67 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 import com.example.voltahome.itsme.ItsmeConfirmationResult;
 import com.example.voltahome.itsme.ItsmeFreeText;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
-/** README: "Several operations, one callback". The registry that picks the operation by its stored type. */
+/**
+ * README: "Several operations, one callback". The registry that picks the operation by its stored type. What it
+ * persists and reloads is tested with the database, in ItsmeConfirmationFlowTest (nested class OperationData).
+ */
 class ConfirmableOperationsTest {
 
     @Test
     void duplicateOperationTypeFailsAtStartup() {
-        assertThatThrownBy(() -> new ConfirmableOperations(List.of(new Recording("order"), new Recording("order"))))
+        assertThatThrownBy(() -> operations(new Named("order"), new Named("order")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("order");
     }
 
     @Test
-    void confirmationIsExecutedByTheOperationOfItsStoredType() {
-        Recording order = new Recording("order");
-        Recording offer = new Recording("offer");
-
-        new ConfirmableOperations(List.of(order, offer)).execute(confirmed("offer", "F-3001"));
-
-        assertThat(offer.executed).containsExactly("C-1001/F-3001");
-        assertThat(order.executed).isEmpty();
-    }
-
-    @Test
     void unknownOperationTypeIsRefusedAtTheStart() {
-        assertThatThrownBy(() -> new ConfirmableOperations(List.of(new Recording("order")))
-                        .prepare("refund", "C-1001", "O-2001"))
+        assertThatThrownBy(() -> operations(new Named("order")).prepare("refund", "C-1001", new Named.Data("O-1")))
                 .isInstanceOfSatisfying(OperationException.class,
                         e -> assertThat(e.code()).isEqualTo("unknown_operation"));
     }
 
-    private static ItsmeConfirmationResult confirmed(String type, String reference) {
-        return new ItsmeConfirmationResult("C-1001", type, reference, "text", "acr", Instant.EPOCH);
+    @Test
+    void unknownOperationTypeIsRefusedAtTheExecution() {
+        ItsmeConfirmationResult confirmed =
+                new ItsmeConfirmationResult("C-1001", "refund", "a-reference", "text", "acr", Instant.EPOCH);
+
+        assertThatThrownBy(() -> operations(new Named("order")).execute(confirmed))
+                .isInstanceOfSatisfying(OperationException.class,
+                        e -> assertThat(e.code()).isEqualTo("unknown_operation"));
     }
 
-    /** An operation that only records what it was asked to execute. */
-    private static final class Recording implements ConfirmableOperation {
+    /** No repository: these tests stop before anything is persisted or reloaded. */
+    private static ConfirmableOperations operations(Named... operations) {
+        return new ConfirmableOperations(List.<ConfirmableOperation<?>>of(operations), null, new ObjectMapper());
+    }
 
-        private final String type;
-        private final List<String> executed = new ArrayList<>();
+    /** An operation that only has a type. */
+    private record Named(String type) implements ConfirmableOperation<Named.Data> {
 
-        private Recording(String type) {
-            this.type = type;
+        record Data(String id) {}
+
+        @Override
+        public Class<Data> dataType() {
+            return Data.class;
         }
 
         @Override
-        public String type() {
-            return type;
+        public Optional<ItsmeFreeText> approvalText(String customerId, Data data) {
+            return Optional.of(ItsmeFreeText.builder().text(type + " " + data.id()).build());
         }
 
         @Override
-        public Optional<ItsmeFreeText> approvalText(String customerId, String reference) {
-            return Optional.of(ItsmeFreeText.builder().text(type + " " + reference).build());
-        }
-
-        @Override
-        public boolean execute(String customerId, String reference) {
-            executed.add(customerId + "/" + reference);
-            return true;
+        public Optional<String> execute(String customerId, Data data) {
+            return Optional.of(data.id());
         }
     }
 }

@@ -26,8 +26,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * DEMO ONLY. Stands in for the application's own token, which is out of scope (README: "Hand-over").
- * After the itsme login, the SPA receives a JWT signed by this application (HS256, 15 minutes) in the JSON answer of
- * the hand-over, keeps it in sessionStorage, and sends it as a bearer token on every API call (DemoSecurityConfig).
+ * After the itsme login, and again after each confirmation, the SPA receives a JWT signed by this application (HS256,
+ * 15 minutes) in the JSON answer of the hand-over, keeps it in sessionStorage, and sends it as a bearer token on every API call (DemoSecurityConfig).
  * The key is generated at startup and kept in memory: a restart logs everyone out, and several instances would not
  * share it. A real application uses its existing token management, with a key from a vault.
  */
@@ -54,11 +54,15 @@ public class DemoToken {
 
     /** The token returned to the SPA at the end of a successful itsme login. Our data only, no itsme claim. */
     String issue(ItsmeLoginResult result) {
-        Instant now = result.authenticationTime();
+        return issue(result.customerId(), result.authenticationLevel(), result.authenticationTime());
+    }
+
+    /** The token returned to the SPA at the end of a login or of a confirmation, valid 15 minutes from then. */
+    String issue(String customerId, String authenticationLevel, Instant now) {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(ISSUER)
-                .subject(result.customerId())
-                .claim("acr", result.authenticationLevel())
+                .subject(customerId)
+                .claim("acr", authenticationLevel)
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(TTL)))
                 .build();

@@ -7,10 +7,10 @@
     code challenge, is sent at the start. Redeeming the login's one-time code from the URL fragment requires the
     verifier itself: it binds the end of the login to this browser. (Not PKCE's code_verifier: that one stays
     between the backend and itsme.)
-  - A confirmation is started with the token and executed by the backend at the itsme callback: the SPA only
-    reloads the record afterwards.
+  - A confirmation is started with the token and a new browser code challenge, and executed by the backend at the
+    itsme callback. The SPA then redeems a one-time code, with the verifier, for a new token.
   - Server data is always written with textContent, never as HTML.
-  - After a confirmation, the SPA reloads the record from the API by the type and reference in the URL fragment.
+  - After a confirmation, the SPA reloads the record from the API by the type and reference the redemption returns.
     Nothing about the order or offer is kept in the browser during the itsme round trip.
 -->
 <html lang="en">
@@ -46,8 +46,8 @@
     <tr><th>Authentication level</th><td id="level"></td></tr>
     <tr><th>Token expires at</th><td id="expires-at"></td></tr>
   </table>
-  <h2>Orders and offers</h2>
-  <p>You approve each one in the itsme app.</p>
+  <h2>Products and offers</h2>
+  <p>You approve each order and each offer in the itsme app.</p>
   <ul id="operations"></ul>
   <ul id="confirmed"></ul>
   <p><button type="button" id="logout">Log out</button></p>
@@ -67,6 +67,7 @@ const MESSAGES = {
   invalid_grant: 'Your session has expired. Please try again.',
   invalid_request: 'This could not be started from this page. Please try again.',
   invalid_handover: 'This could not be completed in this browser. Please try again.',
+  confirmation_not_shown: 'This page could not be refreshed after itsme. If you confirmed in the itsme app, the operation is registered: log in again to see it.',
   not_linked: 'This itsme account is not linked to a VoltaHome account.',
   no_customer: 'This VoltaHome account is no longer active.',
   wrong_person: 'The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.',
@@ -132,18 +133,24 @@ async function redeemLogin(code) {
 
 // ---------------------------------------------------------------- confirmation
 
-// Each button has its own start endpoint (the API decides the type and builds the text). The API returns the itsme
-// URL; the token stays in sessionStorage during the round trip, and nothing else is kept.
-async function startConfirmation(action) {
-  const { status, data } = await api('POST', action);
+// Step 1: each button has its own start endpoint (the API decides the type, builds the data and the text). The SPA
+// adds a new browser code challenge. The API returns the itsme URL; the verifier and the token stay in sessionStorage
+// during the round trip, and nothing else is kept.
+async function startConfirmation(action, request) {
+  const body = { ...request, browserCodeChallenge: await newBrowserCodeChallenge() };
+  const { status, data } = await api('POST', action, body);
   if (status === 200) { location.assign(data.redirect); } else { showError(data.error); }
 }
 
-// The backend executed the operation at the itsme callback and sent the browser back to
-// "/#confirmed=<type>&reference=<id>". The fragment only says where to look: the SPA reloads that record from the API
-// with its token and shows it as stored now. A typed or forged address shows the same thing: the real record.
-async function showConfirmed(type, reference) {
-  const dto = await reload(type, reference);
+// Step 3: the backend executed the operation at the itsme callback and sent the browser back to
+// "/#confirmation=<code>". The SPA redeems the code with its verifier and receives a new token, with the type and
+// reference of the executed operation; it then reloads that record from the API and shows it as stored.
+// A refused redemption undoes nothing: the operation was executed at the callback.
+async function redeemConfirmation(code) {
+  const { status, data } = await api('POST', '/itsme/confirmation/handover', { handover: code, browserCodeVerifier: takeVerifier() });
+  if (status !== 200) { showError('confirmation_not_shown'); return; }
+  write(sessionStorage, TOKEN, data.accessToken);
+  const dto = await reload(data.operationType, data.operationReference);
   if (dto) {
     show(dto.description + ': ' + dto.status.toLowerCase() + '.', 'notice');
   }
@@ -170,7 +177,7 @@ async function showPortal() {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = operation.label;
-    button.addEventListener('click', () => startConfirmation(operation.action));
+    button.addEventListener('click', () => startConfirmation(operation.action, operation.request));
     li.appendChild(button);
     $('operations').appendChild(li);
   }
@@ -191,7 +198,7 @@ async function start() {
   const error = new URLSearchParams(location.search).get('error');
 
   if (fragment.has('handover')) { await redeemLogin(fragment.get('handover')); }
-  if (fragment.has('confirmed')) { await showConfirmed(fragment.get('confirmed'), fragment.get('reference')); }
+  if (fragment.has('confirmation')) { await redeemConfirmation(fragment.get('confirmation')); }
   if (error) { showError(error); }                   // /login-error?error=... or /confirmation-error?error=...
 
   if (read(sessionStorage, TOKEN)) { await showPortal(); } else { $('home').hidden = false; }

@@ -9,8 +9,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * DEMO ONLY. What the application does once itsme has confirmed an operation (README: "Confirmation of an
- * operation", "Several operations, one callback"): execute the operation stored when the confirmation started, then
- * keep the result. Called at the itsme callback, whatever the operation.
+ * operation", "Several operations, one callback"): reload the operation persisted when the confirmation started
+ * and execute it (ConfirmableOperations.execute), then keep the result. Called at the itsme callback, whatever the operation.
  */
 @Component
 class DemoConfirmedOperationExecutor implements ConfirmedOperationExecutor {
@@ -24,12 +24,14 @@ class DemoConfirmedOperationExecutor implements ConfirmedOperationExecutor {
     }
 
     @Override
-    public void execute(ItsmeConfirmationResult confirmed) {
+    public String execute(ItsmeConfirmationResult confirmed) {
+        String reference;
         try {
-            operations.execute(confirmed);
+            reference = operations.execute(confirmed);
         } catch (OperationException e) {
             throw new ItsmeConfirmationException(e.code(), e);       // nothing was executed
         }
-        confirmedOperations.record(confirmed);                       // stands in for the audit trail
+        confirmedOperations.record(reference, confirmed);            // stands in for the audit trail
+        return reference;
     }
 }

@@ -50,6 +50,7 @@ public abstract class ItsmeIntegrationTest {
     protected static final String CALLBACK = "/login/oauth2/code/itsme";
     protected static final String CONFIRMATION_CALLBACK = "/itsme/confirmation/callback";
     protected static final String LOGIN_HANDOVER = "/itsme/login/handover";
+    protected static final String CONFIRMATION_HANDOVER = "/itsme/confirmation/handover";
 
     /**
      * The SPA's browser code verifier and its S256 browser code challenge (README: "Hand-over"): the test vector of
@@ -102,7 +103,8 @@ public abstract class ItsmeIntegrationTest {
         jdbc.sql("DELETE FROM itsme_authorization_request").update();
         jdbc.sql("DELETE FROM itsme_confirmation_request").update();
         jdbc.sql("DELETE FROM itsme_handover").update();
-        jdbc.sql("UPDATE customer_order SET status = 'OPEN'").update();
+        jdbc.sql("DELETE FROM pending_operation").update();
+        jdbc.sql("DELETE FROM customer_order").update();
         jdbc.sql("UPDATE offer SET status = 'OPEN'").update();
         confirmedOperations.clear();
         fraud.clear();
@@ -150,7 +152,7 @@ public abstract class ItsmeIntegrationTest {
                 .matches("/#handover=[A-Za-z0-9_-]{43}");
     }
 
-    /** The one-time code in the fragment of the redirect to the SPA after a login (#handover=...). */
+    /** The one-time code in the fragment of a redirect to the SPA (#handover=... or #confirmation=...). */
     protected static String handoverCode(MvcResult redirect) {
         String location = redirect.getResponse().getRedirectedUrl();
         assertThat(location).as("redirect to the SPA").contains("#");

@@ -14,7 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * README: "Confirmation of an operation". Stores the confirmation in progress in the database, like
  * JdbcAuthorizationRequestRepository does for the login, plus who started it and what is to be approved: the operation
- * type and reference, never read from the callback (README: "Several operations, one callback"), and the text.
+ * type and reference (the id of the pending operation the application persisted), never
+ * read from the callback (README: "Several operations, one callback"), and the text.
  * Read + checked delete makes each stored confirmation single-use, without database-specific SQL.
  */
 @Component

@@ -40,8 +40,8 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()
-                .requestMatchers("/itsme/login/handover").permitAll()                  // code + verifier
-                .requestMatchers("/itsme/confirmation/callback").permitAll()           // "state"; executes nothing
+                .requestMatchers("/itsme/login/handover", "/itsme/confirmation/handover").permitAll() // code + verifier
+                .requestMatchers("/itsme/confirmation/callback").permitAll()           // single-use "state"
                 .anyRequest().authenticated())
             .oauth2Login(oauth2 -> oauth2
                 .authorizationEndpoint(e -> e

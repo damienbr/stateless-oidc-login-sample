@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import com.example.voltahome.customer.Customer;
 import com.example.voltahome.customer.CustomerRepository;
@@ -27,8 +28,11 @@ class DemoController {
                   Instant expiresAt, List<Operation> operations,
                   List<Confirmed> confirmed) {}
 
-    /** README: "Several operations, one callback". One button per open order or offer. */
-    record Operation(String description, String action, String label) {}
+    /**
+     * README: "Several operations, one callback". One button per product to order and per open offer. The SPA posts
+     * "request" to "action", with its browser code challenge added.
+     */
+    record Operation(String description, String action, String label, Map<String, String> request) {}
 
     record Confirmed(String operationType, String operationReference, Instant confirmedAt) {}
 
@@ -56,23 +60,23 @@ class DemoController {
                 .map(Customer::displayName)
                 .orElse(customerId);
         List<Operation> operations = new ArrayList<>();
-        for (DemoOrderConfirmation.Order order : orders.openOrders(customerId)) {
-            operations.add(new Operation("Order " + order.orderId() + ": " + order.description() + ", EUR "
-                    + order.amount().toPlainString(), "/api/orders/" + order.orderId() + "/confirm", "Confirm order"));
+        for (DemoOrderConfirmation.Product product : orders.products()) {
+            operations.add(new Operation(product.description() + ", EUR " + product.price().toPlainString(),
+                    "/api/orders/confirm", "Order", Map.of("productCode", product.productCode())));
         }
         for (DemoOfferAcceptance.Offer offer : offers.openOffers(customerId)) {
             operations.add(new Operation("Offer " + offer.offerId() + ": " + offer.description() + ", EUR "
                     + offer.pricePerKwh().toPlainString() + " per kWh", "/api/offers/" + offer.offerId() + "/accept",
-                    "Accept offer"));
+                    "Accept offer", Map.of()));
         }
         List<Confirmed> confirmed = confirmedOperations.forCustomer(customerId).stream()
-                .map(r -> new Confirmed(r.operationType(), r.operationReference(), r.confirmedAt()))
+                .map(e -> new Confirmed(e.evidence().operationType(), e.reference(), e.evidence().confirmedAt()))
                 .toList();
         return new Portal(customerId, name, token.getClaimAsString("acr"), token.getIssuedAt(), token.getExpiresAt(),
                 operations, confirmed);
     }
 
-    /** One order, as stored now: after a confirmation, the SPA shows this, not a copy it kept (README: "Hand-over"). */
+    /** One order, created by a confirmation: the SPA shows this, not a copy it kept (README: "Hand-over"). */
     @GetMapping(value = "/api/orders/{orderId}", produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<OrderDto> order(@PathVariable String orderId, @AuthenticationPrincipal Jwt token) {
         return ResponseEntity.of(orders.dto(token.getSubject(), orderId));
