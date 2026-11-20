@@ -57,9 +57,8 @@ class DemoOrderConfirmation implements ConfirmableOperation {
                 .update() == 1;
     }
 
-    /** The same DTO as GET /api/orders/{id}. */
-    @Override
-    public Optional<DemoController.OrderDto> dto(String customerId, String orderId) {
+    /** The order of this customer as the API returns it: GET /api/orders/{id}. */
+    Optional<DemoController.OrderDto> dto(String customerId, String orderId) {
         return find(customerId, orderId)
                 .map(o -> new DemoController.OrderDto(o.orderId(), o.description(), o.amount(), o.status()));
     }

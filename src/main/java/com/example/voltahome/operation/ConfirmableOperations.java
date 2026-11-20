@@ -3,7 +3,6 @@ package com.example.voltahome.operation;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import com.example.voltahome.itsme.ItsmeConfirmationResult;
 import com.example.voltahome.itsme.ItsmeOperation;
@@ -11,9 +10,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * README: "Several operations, one callback". All the operations a customer can confirm with itsme, by type.
- * Each operation has its own start endpoint, and all of them end at the single confirmation callback and the single
- * redemption call (README: "Hand-over"), where the type stored with the confirmation selects the operation to execute.
- * Nothing in the callback URL or in the redemption call does.
+ * Each operation has its own start endpoint, and all of them end at the single confirmation callback, where the type
+ * stored with the confirmation selects the operation to execute. Nothing in the callback URL does.
  */
 @Component
 public class ConfirmableOperations {
@@ -49,14 +47,6 @@ public class ConfirmableOperations {
         if (!operation(confirmed.operationType()).execute(confirmed.customerId(), confirmed.operationReference())) {
             throw new OperationException("operation_not_found");
         }
-    }
-
-    /**
-     * After the execution: the DTO of the record as stored now, for the customer of the confirmation, to return to
-     * the SPA. Empty if the record cannot be read any more; the operation was executed all the same.
-     */
-    public Optional<?> dto(ItsmeConfirmationResult confirmed) {
-        return operation(confirmed.operationType()).dto(confirmed.customerId(), confirmed.operationReference());
     }
 
     private ConfirmableOperation operation(String type) {

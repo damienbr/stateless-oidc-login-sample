@@ -32,13 +32,14 @@ itsme:
     service-code: ${ITSME_CONFIRMATION_SERVICE_CODE:VOLTAHOME_CONFIRM}   # registered at itsme as a Confirmation service
     redirect-uri: ${ITSME_CONFIRMATION_REDIRECT_URI:https://portal.voltahome.example/itsme/confirmation/callback}
 
-# Where the backend sends the browser back to the SPA at the end of an itsme flow (README: "Hand-over"): the
-# hand-over URLs get a one-time code in the fragment (#handover=..., #confirmation=...), the error URLs ?error=<code>.
+# Where the backend sends the browser back to the SPA at the end of an itsme flow. The login hand-over URL gets a
+# one-time code in the fragment (#handover=..., README: "Hand-over"); the confirmed URL gets the type and reference of
+# the executed operation (#confirmed=<type>&reference=<id>); the error URLs get ?error=<code>.
 # Fixed configuration, never taken from a request (no open redirect).
 app:
   login-handover-url: /
   login-error-url: /login-error
-  confirmation-handover-url: /
+  confirmation-confirmed-url: /
   confirmation-error-url: /confirmation-error
 
 logging:

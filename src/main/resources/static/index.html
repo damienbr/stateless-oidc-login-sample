@@ -3,13 +3,15 @@
   DEMO ONLY. Stands in for the application's single page application (SPA). README: "Hand-over" explains the three
   steps; docs/spa-handover.md is the guide for the SPA developer.
   - No cookie: the token from the hand-over is kept in sessionStorage and sent as "Authorization: Bearer".
-  - Before each itsme flow, a random browser code verifier is kept in sessionStorage, and only its S256 hash, the
-    browser code challenge, is sent at the start. Redeeming the one-time code from the URL fragment requires the
-    verifier itself: it binds the end of the flow to this browser. (Not PKCE's code_verifier: that one stays between
-    the backend and itsme.)
+  - Before the login, a random browser code verifier is kept in sessionStorage, and only its S256 hash, the browser
+    code challenge, is sent at the start. Redeeming the login's one-time code from the URL fragment requires the
+    verifier itself: it binds the end of the login to this browser. (Not PKCE's code_verifier: that one stays
+    between the backend and itsme.)
+  - A confirmation is started with the token and executed by the backend at the itsme callback: the SPA only
+    reloads the record afterwards.
   - Server data is always written with textContent, never as HTML.
-  - After a confirmation, the SPA shows the DTO the redemption returns: the record as stored on the server after
-    the execution. Nothing about the order or offer is kept in the browser during the itsme round trip.
+  - After a confirmation, the SPA reloads the record from the API by the type and reference in the URL fragment.
+    Nothing about the order or offer is kept in the browser during the itsme round trip.
 -->
 <html lang="en">
 <head>
@@ -67,14 +69,12 @@ const MESSAGES = {
   invalid_handover: 'This could not be completed in this browser. Please try again.',
   not_linked: 'This itsme account is not linked to a VoltaHome account.',
   no_customer: 'This VoltaHome account is no longer active.',
-  wrong_customer: 'This confirmation was not started by you. Nothing was changed.',
   wrong_person: 'The itsme account used is not the one linked to your VoltaHome account. Nothing was changed.',
   operation_not_found: 'This operation does not exist or can no longer be confirmed. Nothing was changed.',
   unknown_operation: 'This operation cannot be confirmed. Nothing was changed.'
 };
 
-// README: "Several operations, one callback". Where the SPA reloads a DTO by its type, when the redemption's
-// answer carries none (and where a real SPA reloads it after a page refresh).
+// README: "Several operations, one callback". Where the SPA reloads a confirmed record, by its type.
 const RECORDS = { order: '/api/orders/', offer: '/api/offers/' };
 
 const $ = id => document.getElementById(id);
@@ -132,25 +132,20 @@ async function redeemLogin(code) {
 
 // ---------------------------------------------------------------- confirmation
 
-// Step 1: each button has its own start endpoint (the API decides the type and builds the text). The API returns
-// the itsme URL; the token stays in sessionStorage during the round trip, and nothing else is kept.
+// Each button has its own start endpoint (the API decides the type and builds the text). The API returns the itsme
+// URL; the token stays in sessionStorage during the round trip, and nothing else is kept.
 async function startConfirmation(action) {
-  const challenge = await newBrowserCodeChallenge();
-  const { status, data } = await api('POST', action, { browserCodeChallenge: challenge });
+  const { status, data } = await api('POST', action);
   if (status === 200) { location.assign(data.redirect); } else { showError(data.error); }
 }
 
-// Step 3: the backend sent the browser back to "/#confirmation=<code>". Redeeming executes the operation; the answer
-// says which one and carries its DTO, as stored after the execution.
-async function redeemConfirmation(code) {
-  const { status, data } = await api('POST', '/api/confirmation/redeem', { handover: code, browserCodeVerifier: takeVerifier() });
-  if (status === 401) { show('Your session has expired. Nothing was changed.', 'error'); return; }
-  if (status !== 200) { showError(data.error); return; }
-  const dto = data.dto || await reload(data.operationType, data.operationReference);
+// The backend executed the operation at the itsme callback and sent the browser back to
+// "/#confirmed=<type>&reference=<id>". The fragment only says where to look: the SPA reloads that record from the API
+// with its token and shows it as stored now. A typed or forged address shows the same thing: the real record.
+async function showConfirmed(type, reference) {
+  const dto = await reload(type, reference);
   if (dto) {
-    show('Confirmed: ' + dto.description + ' (' + dto.status.toLowerCase() + ').', 'notice');
-  } else {
-    show('The operation was confirmed.', 'notice');
+    show(dto.description + ': ' + dto.status.toLowerCase() + '.', 'notice');
   }
 }
 
@@ -196,7 +191,7 @@ async function start() {
   const error = new URLSearchParams(location.search).get('error');
 
   if (fragment.has('handover')) { await redeemLogin(fragment.get('handover')); }
-  if (fragment.has('confirmation')) { await redeemConfirmation(fragment.get('confirmation')); }
+  if (fragment.has('confirmed')) { await showConfirmed(fragment.get('confirmed'), fragment.get('reference')); }
   if (error) { showError(error); }                   // /login-error?error=... or /confirmation-error?error=...
 
   if (read(sessionStorage, TOKEN)) { await showPortal(); } else { $('home').hidden = false; }

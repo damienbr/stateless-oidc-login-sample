@@ -23,19 +23,17 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
-import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.JsonNode;
 
 /**
- * README: "Confirmation of an operation", "Hand-over", "Several operations, one callback". Alex (C-1001, itsme account
- * stub-sub-alex) is logged in to the SPA with a demo token and confirms the open order O-2001, in three steps: the SPA
- * starts the confirmation, itsme calls back, and the SPA redeems the approval. Each test changes one thing in that
+ * README: "Confirmation of an operation", "Several operations, one callback". Alex (C-1001, itsme account
+ * stub-sub-alex) is logged in to the SPA with a demo token and confirms the open order O-2001, in two steps: the SPA
+ * starts the confirmation, and itsme calls back: the operation is executed there. Each test changes one thing in that
  * valid confirmation and states the expected answer. Alex also has an offer F-3001; Sam (C-1002) has an order O-2002
  * and an offer F-3002.
  */
@@ -43,7 +41,6 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     private static final String START = "/api/orders/O-2001/confirm";
     private static final String ACCEPT_OFFER = "/api/offers/F-3001/accept";
-    private static final String REDEEM = "/api/confirmation/redeem";
 
     private String alex;
 
@@ -76,7 +73,6 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         assertThat(query.getFirst("code_challenge_method")).isEqualTo("S256");
         assertThat(query.getFirst("code_challenge")).isNotBlank();
         assertThat(decode(query.getFirst("claims"))).contains("Confirm order O-2001", "EUR 149.00");
-        assertThat(decode(started.location())).doesNotContain(BROWSER_CODE_CHALLENGE);   // stays with us
     }
 
     @Test
@@ -107,7 +103,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     @Test
     void tokenRequestUsesTheConfirmationRedirectUriClientSecretPostAndPkce() throws Exception {
-        confirm(alex, t -> t).andExpect(status().isOk());
+        confirm(alex, t -> t).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
         List<LoggedRequest> requests = itsme.findAll(postRequestedFor(urlEqualTo("/v2/token")));
         Map<String, String> form = formParams(requests.get(requests.size() - 1).getBodyAsString());
@@ -119,17 +115,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     @Test
     void confirmationCannotBeStartedWithoutToken() throws Exception {
-        mvc.perform(post(START).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))))
-                .andExpect(status().isUnauthorized());
-        assertThat(pendingConfirmations()).isZero();
-    }
-
-    @Test
-    void confirmationCannotBeStartedWithoutBrowserCodeChallenge() throws Exception {
-        mvc.perform(withToken(post(START), alex).contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("invalid_request"));
+        mvc.perform(post(START)).andExpect(status().isUnauthorized());
         assertThat(pendingConfirmations()).isZero();
     }
 
@@ -149,9 +135,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         @Test
         void linkedItsmeAccountConfirmsTheOrder() throws Exception {
             confirm(alex, t -> t.sub("stub-sub-alex"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.operationType").value("order"))
-                    .andExpect(jsonPath("$.operationReference").value("O-2001"));
+                    .andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
             assertThat(orderStatus("O-2001")).isEqualTo("CONFIRMED");
             assertThat(confirmedOperations.forCustomer("C-1001"))
@@ -167,10 +151,10 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void unknownItsmeAccountCannotConfirmAndIsReported() throws Exception {
-            approve(alex, t -> t.sub("stub-sub-stranger"))
+            confirm(alex, t -> t.sub("stub-sub-stranger"))
                     .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
 
-            assertThat(codesWaiting()).isZero();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
             assertThat(fraud.raisedSignals()).singleElement().satisfies(s -> {
                 assertThat(s.signal()).isEqualTo(FraudSignal.WRONG_ITSME_ACCOUNT);
                 assertThat(s.customerId()).isEqualTo("C-1001");
@@ -182,10 +166,10 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void itsmeAccountOfAnotherCustomerCannotConfirm() throws Exception {
             givenLinked("C-1002", "stub-sub-sam");
 
-            approve(alex, t -> t.sub("stub-sub-sam"))
+            confirm(alex, t -> t.sub("stub-sub-sam"))
                     .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
 
-            assertThat(codesWaiting()).isZero();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
         }
 
         @Test
@@ -196,21 +180,6 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
             confirmationCallback(started.state())
                     .andExpect(redirectedUrl("/confirmation-error?error=wrong_person"));
-        }
-
-        @Test
-        void confirmationStartedByAnotherCustomerCannotBeRedeemedWithThisToken() throws Exception {
-            givenLinked("C-1002", "stub-sub-sam");
-            String sam = tokenOf("stub-sub-sam");
-            String approvedForAlex = handoverCode(approve(alex, t -> t.sub("stub-sub-alex"))
-                    .andExpect(redirectedToConfirmationHandover()).andReturn());
-
-            redeem(sam, approvedForAlex, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("wrong_customer"));
-
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-            assertThat(confirmedOperations.forCustomer("C-1002")).isEmpty();
             assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
         }
 
@@ -221,7 +190,8 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             mvc.perform(get(CONFIRMATION_CALLBACK).param("error", "access_denied").param("state", started.state()))
                     .andExpect(redirectedUrl("/confirmation-error?error=access_denied"));
 
-            assertThat(codesWaiting()).isZero();
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
+            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
 
         @Test
@@ -232,6 +202,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
                 stubTokenEndpoint(idToken(started.nonce()).build());
                 confirmationCallback(started.state())
                         .andExpect(redirectedUrl("/confirmation-error?error=no_customer"));
+                assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
             } finally {
                 jdbc.sql("UPDATE customer SET active = TRUE WHERE customer_id = 'C-1001'").update();
             }
@@ -245,13 +216,14 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void basicAcrIsRejected() throws Exception {
-            approve(alex, t -> t.acr(ItsmeWireMock.ACR_BASIC))
+            confirm(alex, t -> t.acr(ItsmeWireMock.ACR_BASIC))
                     .andExpect(redirectedUrl("/confirmation-error?error=invalid_id_token"));
+            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
         }
 
         @Test
         void idTokenIssuedForAnotherRequestIsRejected() throws Exception {
-            approve(alex, t -> t.claim("nonce", "nonce-of-another-request"))
+            confirm(alex, t -> t.claim("nonce", "nonce-of-another-request"))
                     .andExpect(redirectedUrl("/confirmation-error?error=invalid_nonce"));
         }
 
@@ -265,95 +237,47 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         }
     }
 
-    // ------------------------------------------------------------------ hand-over to the SPA (README "Hand-over")
+    // ------------------------------------------------------------------ the callback: execution, then back to the SPA
 
     @Nested
-    class Handover {
+    class Callback {
 
         @Test
-        void callbackExecutesNothing() throws Exception {
-            approve(alex, t -> t).andExpect(redirectedToConfirmationHandover());
+        void callbackExecutesTheOperationOnceItsmeConfirmedIt() throws Exception {
+            // No call with the token is needed after the approval: the callback itself executes
+            confirm(alex, t -> t).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-            assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
-        }
-
-        @Test
-        void redemptionWithoutTokenIsRefused() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
-
-            mvc.perform(post(REDEEM).contentType(MediaType.APPLICATION_JSON).content(
-                            json.writeValueAsString(Map.of("handover", code, "browserCodeVerifier", BROWSER_CODE_VERIFIER))))
-                    .andExpect(status().isUnauthorized());
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-        }
-
-        @Test
-        void redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
-
-            redeem(alex, code, ANOTHER_BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("invalid_handover"));
-            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());             // no second try
-            assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
-        }
-
-        @Test
-        void longestApprovalTextIsHandedOverIntact() throws Exception {
-            // 7500 quotes: twice as long once written as JSON in itsme_handover.result
-            String longest = "\"".repeat(ItsmeFreeText.MAX_LENGTH);
-            StartedConfirmation started = startConfirmation(alex);
-            jdbc.sql("UPDATE itsme_confirmation_request SET approval_text = :text").param("text", longest).update();
-            stubTokenEndpoint(idToken(started.nonce()).build());
-            String code = handoverCode(confirmationCallback(started.state())
-                    .andExpect(redirectedToConfirmationHandover()).andReturn());
-
-            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
-
-            assertThat(confirmedOperations.forCustomer("C-1001")).singleElement()
-                    .satisfies(r -> assertThat(r.approvalText()).isEqualTo(longest));
-        }
-
-        @Test
-        void approvalCannotBeRedeemedTwice() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
-            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
-
-            redeem(alex, code, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+            assertThat(orderStatus("O-2001")).isEqualTo("CONFIRMED");
             assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);
         }
 
         @Test
-        void approvalExpiresAfterSixtySecondsAndIsPurged() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
+        void confirmationUsesNoHandoverCode() throws Exception {
+            confirm(alex, t -> t).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
-            clock.advance(ItsmeHandover.CODE_TTL.plusSeconds(1));
-
-            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isBadRequest());
-            handovers.purgeExpired();
             assertThat(jdbc.sql("SELECT COUNT(*) FROM itsme_handover").query(Long.class).single()).isZero();
+        }
+
+        @Test
+        void confirmedAddressTypedByHandExecutesNothing() throws Exception {
+            // "/#confirmed=..." is only where the SPA looks: the API answers with the record as it is
+            mvc.perform(withToken(get("/api/orders/O-2001"), alex))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("OPEN"));
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
 
         @Test
-        void loginCodeCannotBeRedeemedAsAConfirmation() throws Exception {
-            String loginCode = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
+        void longestApprovalTextIsKeptIntact() throws Exception {
+            String longest = "\"".repeat(ItsmeFreeText.MAX_LENGTH);
+            StartedConfirmation started = startConfirmation(alex);
+            jdbc.sql("UPDATE itsme_confirmation_request SET approval_text = :text").param("text", longest).update();
+            stubTokenEndpoint(idToken(started.nonce()).build());
 
-            redeem(alex, loginCode, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("invalid_handover"));
-        }
+            confirmationCallback(started.state()).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
-        @Test
-        void confirmationCodeCannotBeRedeemedAsALogin() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
-
-            redeemLogin(code, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+            assertThat(confirmedOperations.forCustomer("C-1001")).singleElement()
+                    .satisfies(r -> assertThat(r.approvalText()).isEqualTo(longest));
         }
 
         @Test
@@ -364,7 +288,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
             mvc.perform(get(CONFIRMATION_CALLBACK).param("code", "stub-authorization-code")
                             .param("state", started.state()).param("redirect_uri", "https://attacker.example/"))
-                    .andExpect(redirectedToConfirmationHandover());
+                    .andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
         }
     }
 
@@ -378,15 +302,8 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex, ACCEPT_OFFER);
             assertThat(decode(query(started).getFirst("redirect_uri"))).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
             stubTokenEndpoint(idToken(started.nonce()).build());
-            String code = handoverCode(confirmationCallback(started.state())
-                    .andExpect(redirectedToConfirmationHandover()).andReturn());
 
-            redeem(alex, code, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.operationType").value("offer"))
-                    .andExpect(jsonPath("$.operationReference").value("F-3001"))
-                    .andExpect(jsonPath("$.dto.offerId").value("F-3001"))
-                    .andExpect(jsonPath("$.dto.status").value("ACCEPTED"));
+            confirmationCallback(started.state()).andExpect(redirectedUrl("/#confirmed=offer&reference=F-3001"));
 
             assertThat(offerStatus("F-3001")).isEqualTo("ACCEPTED");
             assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
@@ -416,7 +333,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void confirmedOrderCannotBeSentForConfirmationAgain() throws Exception {
-            confirm(alex, t -> t).andExpect(status().isOk());
+            confirm(alex, t -> t).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
             start(alex, START)
                     .andExpect(status().isBadRequest())
@@ -428,11 +345,10 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex);
             stubTokenEndpoint(idToken(started.nonce()).build());
 
-            String code = handoverCode(mvc.perform(get(CONFIRMATION_CALLBACK)
+            mvc.perform(get(CONFIRMATION_CALLBACK)
                             .param("code", "stub-authorization-code").param("state", started.state())
                             .param("operation_type", "offer").param("operation_reference", "F-3001"))
-                    .andExpect(redirectedToConfirmationHandover()).andReturn());
-            redeem(alex, code, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
+                    .andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
             assertThat(orderStatus("O-2001")).isEqualTo("CONFIRMED");      // the stored operation
             assertThat(offerStatus("F-3001")).isEqualTo("OPEN");
@@ -443,11 +359,9 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex);
             jdbc.sql("UPDATE itsme_confirmation_request SET operation_reference = 'O-2002'").update();
             stubTokenEndpoint(idToken(started.nonce()).build());
-            String code = handoverCode(confirmationCallback(started.state()).andReturn());
 
-            redeem(alex, code, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("operation_not_found"));
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=operation_not_found"));
 
             assertThat(orderStatus("O-2002")).isEqualTo("OPEN");
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
@@ -455,18 +369,15 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
         @Test
         void orderConfirmedInTheMeantimeIsNotExecutedTwice() throws Exception {
-            // Two confirmations of the same order, started before either is redeemed: the execution checks it again
+            // Two confirmations of the same order, started before either is approved: the execution checks it again
             StartedConfirmation first = startConfirmation(alex);
             StartedConfirmation second = startConfirmation(alex);
             stubTokenEndpoint(idToken(first.nonce()).build());
-            String firstCode = handoverCode(confirmationCallback(first.state()).andReturn());
+            confirmationCallback(first.state()).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
             stubTokenEndpoint(idToken(second.nonce()).build());
-            String secondCode = handoverCode(confirmationCallback(second.state()).andReturn());
-            redeem(alex, firstCode, BROWSER_CODE_VERIFIER).andExpect(status().isOk());
 
-            redeem(alex, secondCode, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("operation_not_found"));
+            confirmationCallback(second.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=operation_not_found"));
             assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);
         }
 
@@ -475,40 +386,18 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex);
             jdbc.sql("UPDATE itsme_confirmation_request SET operation_type = 'refund'").update();
             stubTokenEndpoint(idToken(started.nonce()).build());
-            String code = handoverCode(confirmationCallback(started.state()).andReturn());
 
-            redeem(alex, code, BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error").value("unknown_operation"));
+            confirmationCallback(started.state())
+                    .andExpect(redirectedUrl("/confirmation-error?error=unknown_operation"));
 
             assertThat(orderStatus("O-2001")).isEqualTo("OPEN");
             assertThat(confirmedOperations.forCustomer("C-1001")).isEmpty();
         }
 
         @Test
-        void redemptionReturnsTheDtoAsStoredAfterTheExecution() throws Exception {
-            // The same DTO as GET /api/orders/{id}, read for the customer of the confirmation after the update
-            confirm(alex, t -> t)
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.dto.orderId").value("O-2001"))
-                    .andExpect(jsonPath("$.dto.description").value("Smart thermostat"))
-                    .andExpect(jsonPath("$.dto.amount").value(149.00))
-                    .andExpect(jsonPath("$.dto.status").value("CONFIRMED"));
-        }
-
-        @Test
-        void refusedRedemptionReturnsNoDto() throws Exception {
-            String code = handoverCode(approve(alex, t -> t).andReturn());
-
-            redeem(alex, code, ANOTHER_BROWSER_CODE_VERIFIER)
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.dto").doesNotExist());
-        }
-
-        @Test
         void confirmedOrderIsReloadedAsStoredNow() throws Exception {
-            // What the SPA does after a page refresh: reload the record by its type and reference
-            confirm(alex, t -> t).andExpect(status().isOk());
+            // What the SPA does when it lands on "/#confirmed=order&reference=O-2001": reload that record
+            confirm(alex, t -> t).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
             mvc.perform(withToken(get("/api/orders/O-2001"), alex))
                     .andExpect(status().isOk())
@@ -532,11 +421,11 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         void callbackCannotBeReplayed() throws Exception {
             StartedConfirmation started = startConfirmation(alex);
             stubTokenEndpoint(idToken(started.nonce()).build());
-            confirmationCallback(started.state()).andExpect(redirectedToConfirmationHandover());
+            confirmationCallback(started.state()).andExpect(redirectedUrl("/#confirmed=order&reference=O-2001"));
 
             confirmationCallback(started.state())
                     .andExpect(redirectedUrl("/confirmation-error?error=confirmation_not_found"));
-            assertThat(codesWaiting()).isOne();
+            assertThat(confirmedOperations.forCustomer("C-1001")).hasSize(1);                  // executed once
         }
 
         @Test
@@ -589,7 +478,6 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     // ------------------------------------------------------------------ helpers
 
     @Autowired JdbcConfirmationRequestRepository confirmationRequests;
-    @Autowired ItsmeHandover handovers;
 
     private record StartedConfirmation(String location, String state, String nonce) {}
 
@@ -606,7 +494,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         return request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
     }
 
-    /** Step 1: the customer clicks "Confirm order"; the SPA sends its browser code challenge with its token. */
+    /** Step 1: the customer clicks "Confirm order"; the SPA calls the start endpoint with its token. */
     private StartedConfirmation startConfirmation(String token) throws Exception {
         return startConfirmation(token, START);
     }
@@ -622,8 +510,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     }
 
     private ResultActions start(String token, String startPath) throws Exception {
-        return mvc.perform(withToken(post(startPath), token).contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))));
+        return mvc.perform(withToken(post(startPath), token));
     }
 
     /** Step 2: itsme redirects the browser back with a code. The navigation carries no credential. */
@@ -631,43 +518,24 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
         return mvc.perform(get(CONFIRMATION_CALLBACK).param("code", "stub-authorization-code").param("state", state));
     }
 
-    /** Steps 1 and 2, where the test only describes the ID token returned by itsme. */
-    private ResultActions approve(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
+    /** The two steps: the callback executes the operation, or refuses. */
+    private ResultActions confirm(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
         StartedConfirmation started = startConfirmation(token);
         stubTokenEndpoint(idToken.apply(idToken(started.nonce())).build());
         return confirmationCallback(started.state());
     }
 
-    /** Step 3: the SPA redeems the approval with a browser code verifier and a bearer token. */
-    private ResultActions redeem(String token, String code, String verifier) throws Exception {
-        return mvc.perform(withToken(post(REDEEM), token).contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(Map.of("handover", code, "browserCodeVerifier", verifier))));
-    }
-
-    /** The three steps, with the right browser code verifier. */
-    private ResultActions confirm(String token, UnaryOperator<ItsmeWireMock.IdTokenBuilder> idToken) throws Exception {
-        return redeem(token, handoverCode(approve(token, idToken)
-                .andExpect(redirectedToConfirmationHandover()).andReturn()), BROWSER_CODE_VERIFIER);
-    }
-
-    /** Portal API and the three steps, as the SPA makes them. */
+    /** Portal API, the two steps, and the reload of the record, as the SPA makes them. */
     private List<MvcResult> wholeConfirmation() throws Exception {
         MvcResult portal = portal(alex).andExpect(status().isOk()).andReturn();
-        MvcResult start = mvc.perform(withToken(post(START), alex).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("browserCodeChallenge", BROWSER_CODE_CHALLENGE))))
-                .andExpect(status().isOk()).andReturn();
+        MvcResult start = mvc.perform(withToken(post(START), alex)).andExpect(status().isOk()).andReturn();
         MultiValueMap<String, String> query = UriComponentsBuilder.fromUriString(json.readTree(
                 start.getResponse().getContentAsString()).get("redirect").asString()).build().getQueryParams();
         stubTokenEndpoint(idToken(decode(query.getFirst("nonce"))).build());
         MvcResult callback = confirmationCallback(decode(query.getFirst("state")))
-                .andExpect(redirectedToConfirmationHandover()).andReturn();
-        MvcResult redeem = redeem(alex, handoverCode(callback), BROWSER_CODE_VERIFIER).andExpect(status().isOk()).andReturn();
-        return List.of(portal, start, callback, redeem);
-    }
-
-    private static ResultMatcher redirectedToConfirmationHandover() {
-        return result -> assertThat(result.getResponse().getRedirectedUrl())
-                .matches("/#confirmation=[A-Za-z0-9_-]{43}");
+                .andExpect(redirectedUrl("/#confirmed=order&reference=O-2001")).andReturn();
+        MvcResult reload = mvc.perform(withToken(get("/api/orders/O-2001"), alex)).andExpect(status().isOk()).andReturn();
+        return List.of(portal, start, callback, reload);
     }
 
     private long pendingConfirmations() {
@@ -682,9 +550,5 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     private String offerStatus(String offerId) {
         return jdbc.sql("SELECT status FROM offer WHERE offer_id = :id").param("id", offerId)
                 .query(String.class).single();
-    }
-
-    private long codesWaiting() {
-        return jdbc.sql("SELECT COUNT(*) FROM itsme_handover WHERE code IS NOT NULL").query(Long.class).single();
     }
 }

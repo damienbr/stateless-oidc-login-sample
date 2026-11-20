@@ -57,9 +57,8 @@ class DemoOfferAcceptance implements ConfirmableOperation {
                 .update() == 1;
     }
 
-    /** The same DTO as GET /api/offers/{id}. */
-    @Override
-    public Optional<DemoController.OfferDto> dto(String customerId, String offerId) {
+    /** The offer of this customer as the API returns it: GET /api/offers/{id}. */
+    Optional<DemoController.OfferDto> dto(String customerId, String offerId) {
         return find(customerId, offerId)
                 .map(o -> new DemoController.OfferDto(o.offerId(), o.description(), o.pricePerKwh(), o.status()));
     }

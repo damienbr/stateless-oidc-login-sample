@@ -34,13 +34,6 @@ class ConfirmableOperationsTest {
     }
 
     @Test
-    void dtoIsReadByTheOperationOfTheStoredTypeForTheStoredCustomer() {
-        ConfirmableOperations operations = new ConfirmableOperations(List.of(new Recording("order"), new Recording("offer")));
-
-        assertThat(operations.dto(confirmed("offer", "F-3001"))).isEqualTo(Optional.of("offer F-3001 of C-1001"));
-    }
-
-    @Test
     void unknownOperationTypeIsRefusedAtTheStart() {
         assertThatThrownBy(() -> new ConfirmableOperations(List.of(new Recording("order")))
                         .prepare("refund", "C-1001", "O-2001"))
@@ -76,11 +69,6 @@ class ConfirmableOperationsTest {
         public boolean execute(String customerId, String reference) {
             executed.add(customerId + "/" + reference);
             return true;
-        }
-
-        @Override
-        public Optional<String> dto(String customerId, String reference) {
-            return Optional.of(type + " " + reference + " of " + customerId);
         }
     }
 }

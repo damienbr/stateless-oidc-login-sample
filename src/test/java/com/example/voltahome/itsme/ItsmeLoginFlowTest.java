@@ -32,6 +32,7 @@ import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.oauth2.core.OAuth2AuthorizationException;
@@ -351,6 +352,18 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             String code = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
 
             redeemLogin(code, BROWSER_CODE_CHALLENGE)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("invalid_handover"));
+        }
+
+        @Test
+        void loginCodeWithoutBrowserCodeVerifierIsRefused() throws Exception {
+            // The code alone is not enough: the browser that started the login must show its verifier
+            givenLinked("C-1001", "stub-sub-alex");
+            String code = handoverCode(login(t -> t.sub("stub-sub-alex")).andReturn());
+
+            mvc.perform(post(LOGIN_HANDOVER).contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("handover", code))))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("invalid_handover"));
         }

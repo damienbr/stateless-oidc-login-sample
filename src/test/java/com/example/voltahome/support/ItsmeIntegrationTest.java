@@ -150,7 +150,7 @@ public abstract class ItsmeIntegrationTest {
                 .matches("/#handover=[A-Za-z0-9_-]{43}");
     }
 
-    /** The one-time code in the fragment of a redirect to the SPA (#handover=... or #confirmation=...). */
+    /** The one-time code in the fragment of the redirect to the SPA after a login (#handover=...). */
     protected static String handoverCode(MvcResult redirect) {
         String location = redirect.getResponse().getRedirectedUrl();
         assertThat(location).as("redirect to the SPA").contains("#");

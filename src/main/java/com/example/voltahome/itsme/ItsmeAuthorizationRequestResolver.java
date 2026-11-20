@@ -48,7 +48,7 @@ public class ItsmeAuthorizationRequestResolver implements OAuth2AuthorizationReq
         }
         String browserCodeChallenge = request.getParameter(ItsmeHandover.BROWSER_CODE_CHALLENGE_PARAMETER);
         if ("POST".equals(request.getMethod()) && ItsmeHandover.isBrowserCodeChallenge(browserCodeChallenge)) {
-            handover.begin(original.getState(), ItsmeHandover.Flow.LOGIN, browserCodeChallenge);
+            handover.begin(original.getState(), browserCodeChallenge);
         }
         return original;
     }

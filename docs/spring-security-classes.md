@@ -71,7 +71,7 @@ The list of access rules, read from top to bottom; the first matching rule wins:
 
 - `requestMatchers("/", "/index.html", "/login-error", "/confirmation-error", "/error").permitAll()`: the SPA's page and its error routes are public;
 - `requestMatchers("/itsme/login/handover").permitAll()`: the SPA redeems its one-time code there, before it has a token; the code and the browser code verifier protect it (README: "Hand-over");
-- `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential, is protected by `state`, and executes nothing;
+- `requestMatchers("/itsme/confirmation/callback").permitAll()`: itsme's redirect after a confirmation; it carries no credential and is protected by the single-use `state`, which only a call with the customer's token can create (README: "Confirmation of an operation");
 - `anyRequest().authenticated()`: everything else requires a logged-in user.
 
 The two login URLs (`/oauth2/authorization/itsme` and the callback) do not need a rule: their filters run earlier in the chain and answer before the `AuthorizationFilter` is reached.
@@ -312,7 +312,7 @@ A logged-in customer clicks "Confirm order" or "Accept offer" in the SPA and app
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
-Three methods, the three steps of README "Hand-over". `start` (the SPA's API call) builds the authorization request, stores the confirmation in progress and begins the hand-over with the SPA's browser code challenge. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer and completes the hand-over; it executes nothing, because the callback carries no credential. `redeem` (the SPA's API call) returns the confirmed operation, which is executed then. After Spring's checks, the service makes the checks that decide whether the approval counts: the itsme account that approved it is the one linked to the customer who started it, and the customer who redeems it is that customer.
+Two methods. `start` (the SPA's API call, with the customer's token) builds the authorization request and stores the confirmation in progress. `complete` (the callback, `ItsmeConfirmationCallbackController`) checks itsme's answer; after Spring's checks, the service makes the check that decides whether the approval counts: the itsme account that approved it is the one linked to the customer who started it. Then it has the operation executed, through `ConfirmedOperationExecutor`, the boundary with the application (as `LoginHandover` is for the login). There is no hand-over here: nothing secret has to reach the browser (README: "Hand-over").
 
 **`ClientRegistration`, built by `ItsmeClientConfig.confirmationRegistration`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 

@@ -48,7 +48,7 @@ public class ItsmeLoginSuccessHandler implements AuthenticationSuccessHandler {
                 clock.instant());
         // The state of this callback: Spring has just found the login in progress with it and checked it
         String state = request.getParameter(OAuth2ParameterNames.STATE);
-        Optional<String> code = handover.complete(state, ItsmeHandover.Flow.LOGIN, result);
+        Optional<String> code = handover.complete(state, result);
         if (code.isEmpty()) {
             // Not started by the SPA with a browser code challenge: nobody can redeem this login
             response.sendRedirect(loginErrorUrl + "?error=invalid_request");

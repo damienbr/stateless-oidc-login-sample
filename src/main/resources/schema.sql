@@ -32,8 +32,9 @@ CREATE TABLE IF NOT EXISTS itsme_authorization_request (
 CREATE INDEX IF NOT EXISTS ix_itsme_authreq_expires ON itsme_authorization_request (expires_at);
 
 -- Confirmation in progress (README: "Confirmation of an operation"): who started it, what is to be approved, and the
--- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation is never read from the callback:
--- its type and reference (README: "Several operations, one callback") are read from here.
+-- protocol values (state, nonce, code_verifier). Single use, 5 minutes. The operation executed at the callback is
+-- never read from the callback URL: its type and reference (README: "Several operations, one callback") are read
+-- from here.
 CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
     state               VARCHAR(128)   PRIMARY KEY,
     customer_id         VARCHAR(64)    NOT NULL,
@@ -47,18 +48,16 @@ CREATE TABLE IF NOT EXISTS itsme_confirmation_request (
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_confreq_expires ON itsme_confirmation_request (expires_at);
 
--- Hand-over to the SPA (README: "Hand-over"), one row per itsme flow, for the login and the confirmation alike:
--- 1. begin:    the SPA's browser code challenge (S256 of its browser code verifier), stored under the flow's state;
+-- Hand-over of the login to the SPA (README: "Hand-over"), one row per login:
+-- 1. begin:    the SPA's browser code challenge (S256 of its browser code verifier), stored under the login's state;
 -- 2. complete: once the callback has checked everything, the result (JSON) and a one-time code;
 -- 3. redeem:   the SPA posts the code and its browser code verifier; the row is deleted (single use).
 -- Not to be confused with PKCE's code_challenge and code_verifier, between the backend and itsme.
 CREATE TABLE IF NOT EXISTS itsme_handover (
     state       VARCHAR(128)   PRIMARY KEY,
-    flow        VARCHAR(16)    NOT NULL,          -- LOGIN or CONFIRMATION
     browser_code_challenge VARCHAR(64) NOT NULL,
     code        VARCHAR(64)    UNIQUE,            -- set by complete
-    result      VARCHAR(16000),                   -- set by complete (JSON); no itsme claim. Holds the approval text:
-                                                  -- 7500 characters, up to two each once escaped (" and \)
+    result      VARCHAR(2000),                    -- set by complete (JSON: ItsmeLoginResult); no itsme claim
     expires_at  TIMESTAMP      NOT NULL           -- 5 minutes to complete, then 60 seconds to redeem
 );
 CREATE INDEX IF NOT EXISTS ix_itsme_handover_expires ON itsme_handover (expires_at);

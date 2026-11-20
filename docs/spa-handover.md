@@ -2,17 +2,17 @@
 
 This page is for the developer of the frontend. It lists the calls the SPA makes, in order, with their requests and answers. You do not need to know OpenID Connect: the backend does all of it. The reasoning and the attacks are in the README, [Hand-over](../README.md#hand-over). The demo SPA, `src/main/resources/static/index.html`, does everything below in about 150 lines of plain JavaScript.
 
-## The idea in four sentences
+## The idea in five sentences
 
-itsme sends the browser back to the **backend**, not to the SPA, and that request cannot answer with JSON. So the backend sends the browser back to the SPA with a **one-time code** in the URL fragment (`#...`). The SPA then posts that code to the backend and gets the real answer as JSON. To prove it is the same browser that started, the SPA keeps a secret **browser code verifier**, sends only its hash (the **browser code challenge**) at the start, and the verifier itself with the code.
+itsme sends the browser back to the **backend**, not to the SPA, and that request cannot answer with JSON. For the **login**, the backend sends the browser back to the SPA with a **one-time code** in the URL fragment (`#...`); the SPA posts that code to the backend and gets the token as JSON. To prove it is the same browser that started the login, the SPA keeps a secret **browser code verifier**, sends only its hash (the **browser code challenge**) at the start, and the verifier itself with the code. For a **confirmation**, there is nothing to fetch: once the customer has confirmed in itsme, the backend executes the operation and sends the browser back with the type and reference of the record. The SPA reloads that record with its token.
 
 The application uses **no cookie**. After the login, the SPA calls the API with `Authorization: Bearer <token>`.
 
-## Browser code verifier and browser code challenge
+## Browser code verifier and browser code challenge (login only)
 
 > Not to be confused with PKCE's `code_verifier` and `code_challenge`. Those are between the backend and itsme, and the SPA never sees them. The browser pair is between the SPA and the backend.
 
-Before each itsme flow (login or confirmation), generate a new verifier, keep it in `sessionStorage`, and compute its challenge:
+Before each login, generate a new verifier, keep it in `sessionStorage`, and compute its challenge:
 
 ```js
 const base64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
@@ -26,8 +26,9 @@ async function newBrowserCodeChallenge() {
 ```
 
 - The **challenge** is sent at the start. It proves nothing by itself.
-- The **verifier** stays in the browser until the end of the flow, then is sent once with the code.
-- Why `sessionStorage`: the itsme flow comes back in the tab that started it, and each tab has its own `sessionStorage`. Flows started in two tabs at the same time keep their own verifier; with `localStorage` the second would overwrite the first, and both would fail. Read the verifier once at the end of the flow, then remove it.
+- The **verifier** stays in the browser until the end of the login, then is sent once with the code.
+- Why `sessionStorage`: the itsme flow comes back in the tab that started it, and each tab has its own `sessionStorage`. Logins started in two tabs at the same time keep their own verifier; with `localStorage` the second would overwrite the first, and both would fail. Read the verifier once at the end of the login, then remove it.
+- A confirmation needs neither: the SPA has nothing to redeem.
 - `crypto.subtle` works on `https://` pages and on `http://localhost`.
 
 ## Login: three steps
@@ -82,23 +83,20 @@ Content-Type: application/json
 
 The code works **once**, even when the answer is an error.
 
-## Confirmation of an operation: three steps
+## Confirmation of an operation: start, then reload
 
 The customer is logged in: every call sends `Authorization: Bearer <token>`.
 
-Each kind of operation has its own start endpoint, and all of them end with the same redemption (README: "Several operations, one callback"). The record to confirm (the order, the offer) already exists on the server; its id is in the start URL.
+Each kind of operation has its own start endpoint, and all of them end the same way (README: "Several operations, one callback"). The record to confirm (the order, the offer) already exists on the server; its id is in the start URL.
 
 ### 1. Start
 
 ```http
 POST /api/orders/O-2001/confirm          (or POST /api/offers/F-3001/accept)
 Authorization: Bearer <token>
-Content-Type: application/json
-
-{"browserCodeChallenge": "<a new browser code challenge>"}
 ```
 
-You send no text and no amount: the backend reads the record for the logged-in customer and builds the text shown in the itsme app.
+There is no body. You send no text and no amount: the backend reads the record for the logged-in customer and builds the text shown in the itsme app.
 
 | Answer | What to do |
 |---|---|
@@ -108,60 +106,34 @@ You send no text and no amount: the backend reads the record for the logged-in c
 
 ### 2. Back from itsme
 
+When the customer confirms in the itsme app, the backend checks itsme's answer and **executes the operation at once**. The SPA has nothing to send: it only learns where to look.
+
 | Address | Meaning |
 |---|---|
-| `/#confirmation=<code>` | itsme approved it, and the backend checked the answer. **Nothing has been executed yet**: redeem the code (step 3) |
+| `/#confirmed=<type>&reference=<id>`, for example `/#confirmed=order&reference=O-2001` | Confirmed in itsme and executed. Reload that record (step 3) |
 | `/confirmation-error?error=<code>` | Refused or failed: show the message for that code. Nothing was changed |
 
 Read and remove the fragment, as for the login.
 
-### 3. Redeem the code: this executes the operation
+The fragment is an address, not a result. Anyone can type `/#confirmed=order&reference=O-2001`: it executes nothing. Never show "confirmed" because the address says so: show what the API returns in step 3.
 
-```http
-POST /api/confirmation/redeem
-Authorization: Bearer <token>
-Content-Type: application/json
+### 3. Show the result: reload the record from the server
 
-{"handover": "<code>", "browserCodeVerifier": "<the verifier from sessionStorage>"}
-```
+Leaving for itsme unloads the SPA: everything held in JavaScript memory is gone when the customer comes back, on `/`. Do not try to keep the screen's state in the browser. Rebuild it from the server:
 
-| Answer | Meaning |
+| `confirmed` | Reload with |
 |---|---|
-| `200 {"operationType": "order", "operationReference": "O-2001", "dto": {...}}` | Confirmed and executed. `dto` is the order or offer as stored after the execution (below) |
-| `400 {"error": "invalid_handover"}` | Too late, already used, or another browser. Nothing was changed |
-| `400 {"error": "wrong_customer"}` | Started by another customer. Nothing was changed |
-| `400 {"error": "operation_not_found"}` | The record changed in the meantime (for example, already confirmed). Nothing was changed |
-| `401` | The token has expired. Nothing was changed |
-
-### 4. Show the result: the DTO comes from the server
-
-Leaving for itsme unloads the SPA: everything held in JavaScript memory is gone when the customer comes back, on `/`. Do not try to keep the screen's state in the browser. The redemption's answer carries what the screen needs:
-
-```json
-{
-  "operationType": "order",
-  "operationReference": "O-2001",
-  "dto": {"orderId": "O-2001", "description": "Smart thermostat", "amount": 149.00, "status": "CONFIRMED"}
-}
-```
-
-`dto` is read on the server after the execution, for the customer of the token. Its fields depend on `operationType`: they are the ones of the matching `GET` below.
-
-The redemption works once: the code is single use. After a page refresh, or if `dto` is `null`, reload the record by its type and reference:
-
-| `operationType` | Reload with |
-|---|---|
-| `order` | `GET /api/orders/{operationReference}` |
-| `offer` | `GET /api/offers/{operationReference}` |
+| `order` | `GET /api/orders/{reference}` |
+| `offer` | `GET /api/offers/{reference}` |
 
 ```http
 GET /api/orders/O-2001
 Authorization: Bearer <token>
 ```
 
-`200 {"orderId": "O-2001", "description": "Smart thermostat", "amount": 149.00, "status": "CONFIRMED"}`, or `404` if it is not this customer's.
+`200 {"orderId": "O-2001", "description": "Smart thermostat", "amount": 149.00, "status": "CONFIRMED"}`, or `404` if it is not this customer's. The `status` is what tells the customer that the order is confirmed.
 
-Route to the record's own page from there if the application has one (for example `/orders/O-2001`). The type and reference come from the redemption's answer, so no return address is needed in a URL.
+Route to the record's own page from there if the application has one (for example `/orders/O-2001`).
 
 Why not keep the order in `localStorage` before leaving:
 
@@ -170,17 +142,17 @@ Why not keep the order in `localStorage` before leaving:
 - **Any script on the page can read it, and it stays** after logout, across tabs, for the next person on a shared computer.
 - **It may not be there.** Another tab, another browser, cleared storage.
 
-The browser code verifier is different: random, single use, useless after 60 seconds, and it carries no business data.
+The login's browser code verifier is different: random, single use, useless after 60 seconds, and it carries no business data.
 
 ## Timers
 
 | What | Duration | Starts | If exceeded |
 |---|---|---|---|
 | Approving in the itsme app | 5 minutes | the start request | callback → `confirmation_not_found` (login: `authorization_request_not_found`) |
-| Redeeming the one-time code | 60 seconds | the callback | `invalid_handover` |
+| Redeeming the login's one-time code | 60 seconds | the login callback | `invalid_handover` |
 | Demo token | 15 minutes | the login | `401` |
 
-The 60 seconds only cover the page load after the callback: redeem the code as soon as the page starts. In every case nothing is executed; offer to start again, never retry with the same code.
+The 60 seconds only cover the page load after the login callback: redeem the code as soon as the page starts. When a timer is exceeded, nothing is executed; offer to start again, never retry with the same code.
 
 ## Entry points: what handles each request
 
@@ -192,20 +164,20 @@ The login's first two requests are not handled by one of our controllers: Spring
 | `GET /login/oauth2/code/itsme` (from itsme) | Spring's `OAuth2LoginAuthenticationFilter` | `ItsmeOidcUserService`, then `ItsmeLoginSuccessHandler` (step 2: `ItsmeHandover.complete`) or `ItsmeLoginFailureHandler` |
 | `POST /itsme/login/handover` | `ItsmeLoginHandoverController` | step 3: `ItsmeHandover.redeem`, then `LoginHandover` |
 | `POST /api/orders/{id}/confirm`, `POST /api/offers/{id}/accept` | `DemoConfirmationController` | `ConfirmableOperations.prepare`, then `ItsmeConfirmationService.start` (step 1) |
-| `GET /itsme/confirmation/callback` (from itsme) | `ItsmeConfirmationCallbackController` | `ItsmeConfirmationService.complete` (step 2) |
-| `POST /api/confirmation/redeem` | `DemoConfirmationController` | `ItsmeConfirmationService.redeem` (step 3), then `ConfirmableOperations.execute` |
+| `GET /itsme/confirmation/callback` (from itsme) | `ItsmeConfirmationCallbackController` | `ItsmeConfirmationService.complete` (step 2): the checks, then `ConfirmedOperationExecutor` (`ConfirmableOperations.execute`) |
 | `GET /api/orders/{id}`, `GET /api/offers/{id}` | `DemoController` | the record, for this customer only |
 
 ## Do and do not
 
-- **Do** keep the browser code verifier in the browser until step 3; send only the challenge at the start.
+- **Do** keep the login's browser code verifier in the browser until step 3; send only the challenge at the start.
 - **Do** remove the fragment from the address bar as soon as you have read the code.
 - **Do** write server data with `textContent`, never with `innerHTML`: a script injected into the page could read the token and the verifier.
-- **Do not** put the verifier, the token or any customer data in a URL.
+- **Do not** put the verifier, the token or any customer data in a URL. (The backend puts the type and reference of a confirmed record in the fragment: an id, nothing else.)
 - **Do not** keep the order, offer or any business data in `localStorage` or `sessionStorage` across the round trip: reload it by id.
-- **Do not** retry a redemption that failed: the code is gone. Start the flow again.
+- **Do not** retry a login redemption that failed: the code is gone. Start the login again.
+- **Do not** show an operation as confirmed because of the `#confirmed` address: show the status the API returns.
 - **Do not** display the `error` parameter from the URL: anyone can change it. Map each code to a fixed message.
 
 ## Trying it
 
-Run the application with the `local` profile (README: "Run the login in a browser"), open <http://localhost:8080>, and watch the network tab of the browser's developer tools: the form POST, the redirects, then the AJAX redemption. No request or answer carries a cookie.
+Run the application with the `local` profile (README: "Run the login in a browser"), open <http://localhost:8080>, and watch the network tab of the browser's developer tools: the form POST, the redirects, then the AJAX redemption of the login; for a confirmation, the start call, the redirects, then the reload of the record. No request or answer carries a cookie.
