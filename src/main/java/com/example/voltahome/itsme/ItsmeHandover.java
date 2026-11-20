@@ -2,7 +2,6 @@ package com.example.voltahome.itsme;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Base64;
@@ -12,7 +11,6 @@ import java.util.regex.Pattern;
 import com.nimbusds.oauth2.sdk.pkce.CodeChallenge;
 import com.nimbusds.oauth2.sdk.pkce.CodeChallengeMethod;
 import com.nimbusds.oauth2.sdk.pkce.CodeVerifier;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.crypto.keygen.Base64StringKeyGenerator;
 import org.springframework.security.crypto.keygen.StringKeyGenerator;
@@ -60,12 +58,12 @@ public class ItsmeHandover {
     private static final StringKeyGenerator CODES =
             new Base64StringKeyGenerator(Base64.getUrlEncoder().withoutPadding(), 32);
 
-    private final JdbcClient jdbc;
+    private final StoredHandoverRepository handovers;
     private final ObjectMapper json;
     private final Clock clock;
 
-    public ItsmeHandover(JdbcClient jdbc, ObjectMapper json, Clock clock) {
-        this.jdbc = jdbc;
+    public ItsmeHandover(StoredHandoverRepository handovers, ObjectMapper json, Clock clock) {
+        this.handovers = handovers;
         this.json = json;
         this.clock = clock;
     }
@@ -79,15 +77,7 @@ public class ItsmeHandover {
         if (!isBrowserCodeChallenge(browserCodeChallenge)) {
             throw new IllegalArgumentException("not a browser code challenge");
         }
-        jdbc.sql("""
-                INSERT INTO itsme_handover (state, flow, browser_code_challenge, expires_at)
-                VALUES (:state, :flow, :browserCodeChallenge, :expiresAt)
-                """)
-                .param("flow", flow.name())
-                .param("state", state)
-                .param("browserCodeChallenge", browserCodeChallenge)
-                .param("expiresAt", Timestamp.from(clock.instant().plus(FLOW_TTL)))
-                .update();
+        handovers.save(new StoredHandover(state, flow, browserCodeChallenge, clock.instant().plus(FLOW_TTL)));
     }
 
     /**
@@ -98,17 +88,8 @@ public class ItsmeHandover {
      */
     public Optional<String> complete(Flow flow, String state, Object result) {
         String code = CODES.generateKey();
-        int updated = jdbc.sql("""
-                UPDATE itsme_handover SET code = :code, result = :result, expires_at = :expiresAt
-                WHERE state = :state AND flow = :flow AND code IS NULL AND expires_at > :now
-                """)
-                .param("flow", flow.name())
-                .param("code", code)
-                .param("result", json.writeValueAsString(result))
-                .param("expiresAt", Timestamp.from(clock.instant().plus(CODE_TTL)))
-                .param("state", state)
-                .param("now", Timestamp.from(clock.instant()))
-                .update();
+        int updated = handovers.complete(state, flow, code, json.writeValueAsString(result),
+                clock.instant().plus(CODE_TTL), clock.instant());
         return updated == 1 ? Optional.of(code) : Optional.empty();
     }
 
@@ -123,17 +104,9 @@ public class ItsmeHandover {
         if (code == null) {
             return Optional.empty();
         }
-        record Stored(String browserCodeChallenge, String result) {}
-        Optional<Stored> stored = jdbc.sql("""
-                SELECT browser_code_challenge, result FROM itsme_handover
-                WHERE code = :code AND flow = :flow AND expires_at > :now
-                """)
-                .param("flow", flow.name())
-                .param("code", code)
-                .param("now", Timestamp.from(clock.instant()))
-                .query((rs, rowNum) -> new Stored(rs.getString("browser_code_challenge"), rs.getString("result")))
-                .optional();
-        int deleted = jdbc.sql("DELETE FROM itsme_handover WHERE code = :code").param("code", code).update();
+        Optional<StoredHandover> stored = handovers.findByCode(code)
+                .filter(found -> found.flow() == flow && found.isValidAt(clock.instant()));
+        int deleted = handovers.deleteByCode(code);
         if (stored.isEmpty() || deleted != 1 || !matches(stored.get().browserCodeChallenge(), browserCodeVerifier)) {
             return Optional.empty();
         }
@@ -143,9 +116,7 @@ public class ItsmeHandover {
     /** Removes flows never completed and codes never redeemed. Idempotent: safe to run on several instances. */
     @Scheduled(fixedDelayString = "PT15M")
     public void purgeExpired() {
-        jdbc.sql("DELETE FROM itsme_handover WHERE expires_at < :now")
-                .param("now", Timestamp.from(clock.instant()))
-                .update();
+        handovers.deleteExpired(clock.instant());
     }
 
     /**

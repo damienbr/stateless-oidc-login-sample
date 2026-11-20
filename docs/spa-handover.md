@@ -191,7 +191,7 @@ The login's first two requests are not handled by one of our controllers: Spring
 
 | Request | Handled by | Our code involved |
 |---|---|---|
-| `POST /oauth2/authorization/itsme` | Spring's `OAuth2AuthorizationRequestRedirectFilter` | `ItsmeAuthorizationRequestResolver` (step 1: `ItsmeHandover.begin`), `JdbcAuthorizationRequestRepository` |
+| `POST /oauth2/authorization/itsme` | Spring's `OAuth2AuthorizationRequestRedirectFilter` | `ItsmeAuthorizationRequestResolver` (step 1: `ItsmeHandover.begin`), `JpaAuthorizationRequestRepository` |
 | `GET /login/oauth2/code/itsme` (from itsme) | Spring's `OAuth2LoginAuthenticationFilter` | `ItsmeOidcUserService`, then `ItsmeLoginSuccessHandler` (step 2: `ItsmeHandover.complete`) or `ItsmeLoginFailureHandler` |
 | `POST /itsme/login/handover` | `ItsmeLoginHandoverController` | step 3: `ItsmeHandover.redeem`, then `LoginHandover` |
 | `POST /api/orders/confirm`, `POST /api/offers/{id}/accept` | `DemoConfirmationController` | `ConfirmableOperations.prepare` (the data is persisted in `pending_operation`), then `ItsmeConfirmationService.start` (step 1: `ItsmeHandover.begin`) |

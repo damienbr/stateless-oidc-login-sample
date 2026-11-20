@@ -24,10 +24,10 @@ import tools.jackson.databind.ObjectMapper;
 public class ConfirmableOperations {
 
     private final Map<String, ConfirmableOperation<?>> byType = new HashMap<>();
-    private final JdbcPendingOperationRepository pending;
+    private final JpaPendingOperationRepository pending;
     private final ObjectMapper json;
 
-    public ConfirmableOperations(List<ConfirmableOperation<?>> operations, JdbcPendingOperationRepository pending,
+    public ConfirmableOperations(List<ConfirmableOperation<?>> operations, JpaPendingOperationRepository pending,
                                  ObjectMapper json) {
         this.pending = pending;
         this.json = json;

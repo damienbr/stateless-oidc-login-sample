@@ -9,7 +9,7 @@ import java.util.Optional;
 import com.example.voltahome.customer.CustomerRepository;
 import com.example.voltahome.fraud.FraudService;
 import com.example.voltahome.fraud.FraudSignal;
-import com.example.voltahome.itsme.JdbcConfirmationRequestRepository.PendingConfirmation;
+import com.example.voltahome.itsme.JpaConfirmationRequestRepository.PendingConfirmation;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,7 +59,7 @@ public class ItsmeConfirmationService {
     private final ClientRegistration registration;
     private final DefaultOAuth2AuthorizationRequestResolver resolver;
     private final ObjectMapper json;
-    private final JdbcConfirmationRequestRepository confirmations;
+    private final JpaConfirmationRequestRepository confirmations;
     private final OidcAuthorizationCodeAuthenticationProvider itsmeAnswer;
     private final ItsmeLinkRepository links;
     private final CustomerRepository customers;
@@ -69,7 +69,7 @@ public class ItsmeConfirmationService {
     private final Clock clock;
 
     public ItsmeConfirmationService(ItsmeProperties properties, ObjectMapper json,
-            JdbcConfirmationRequestRepository confirmations, ConfirmedOperationExecutor executor,
+            JpaConfirmationRequestRepository confirmations, ConfirmedOperationExecutor executor,
             ItsmeHandover handover,
             OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> itsmeTokenResponseClient,
             JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory,

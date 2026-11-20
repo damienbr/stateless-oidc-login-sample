@@ -27,7 +27,7 @@ New to the project? Follow this order; it takes about an hour. For the reasoning
 | `itsme/ItsmeAuthorizationRequestResolver.java` | What we send to itsme |
 | `itsme/ItsmeClientConfig.java` | How the ID token is decrypted and checked (`idTokenDecoderFactory`) |
 | `itsme/ItsmeOidcUserService.java` | How the itsme `sub` becomes our customer |
-| `itsme/JdbcAuthorizationRequestRepository.java` | How a login in progress survives without a session |
+| `itsme/JpaAuthorizationRequestRepository.java` | How a login in progress survives without a session |
 
 5. **Read the tests as a list of attacks.** Start with `ItsmeLoginFlowTest`: each test changes one thing in a valid login and states the expected answer.
 
@@ -86,7 +86,7 @@ New to the project? Follow this order; it takes about an hour. For the reasoning
 
 Requirements: IntelliJ IDEA (Community edition is enough) and JDK 17 or later. Maven is bundled with IntelliJ.
 
-Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nimbus JOSE + JWT (managed by Spring Boot), H2, WireMock 3.
+Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nimbus JOSE + JWT (managed by Spring Boot), Spring Data JPA (Hibernate), H2, WireMock 3.
 
 1. **Open the project**: *File → Open…*, select `pom.xml`, choose *Open as Project*. IntelliJ downloads the dependencies.
 2. **Check the JDK**: *File → Project Structure → Project → SDK* = 17 or later.
@@ -245,11 +245,13 @@ src/main/java/com/example/voltahome
 │   ├── ItsmeCrypto.java                     nested signed JWT check
 │   ├── AcrValidator.java                    authentication level check
 │   ├── ItsmeOidcUserService.java            customer by sub, principal without itsme claims
-│   ├── ItsmeLinkRepository.java             itsme sub → customer (read only)
-│   ├── JdbcAuthorizationRequestRepository   login in progress in the database
+│   ├── ItsmeLinkRepository.java             itsme sub → customer (read only; entity ItsmeLink)
+│   ├── JpaAuthorizationRequestRepository    login in progress in the database
+│   ├── StoredAuthorizationRequest(Repository)  its JPA entity and Spring Data repository (itsme_authorization_request)
 │   ├── NoOpAuthorizedClientRepository       the itsme access token is not stored
 │   ├── ItsmeDiscoveryCheck.java             configuration vs. discovery document
 │   ├── ItsmeHandover.java                   hand-over to the SPA, login and confirmation: begin, complete, redeem (one table)
+│   ├── StoredHandover(Repository)           its JPA entity and Spring Data repository (itsme_handover)
 │   ├── ItsmeLoginSuccessHandler.java        end of the login: one-time code, redirect to the SPA
 │   ├── ItsmeLoginHandoverController.java    POST /itsme/login/handover: the SPA redeems the code
 │   ├── ItsmeLoginFailureHandler.java        error code redirect
@@ -263,13 +265,15 @@ src/main/java/com/example/voltahome
 │   ├── ItsmeConfirmedOperation.java         what is handed over after a confirmation (no itsme claim)
 │   ├── ItsmeOperation.java                  what the customer is asked to approve: type, reference, text
 │   ├── ItsmeFreeText.java                   the text shown in the itsme app (free_text template)
-│   ├── JdbcConfirmationRequestRepository    confirmation in progress in the database
+│   ├── JpaConfirmationRequestRepository     confirmation in progress in the database
+│   ├── StoredConfirmationRequest(Repository)  its JPA entity and Spring Data repository (itsme_confirmation_request)
 │   ├── ItsmeConfirmationResult.java         a confirmed operation, as stored at the start (no itsme claim)
 │   └── ItsmeConfirmationException.java      not confirmed: error code
 ├── operation/                               the operations a customer confirms with itsme, by type
 │   ├── ConfirmableOperation.java            one kind of operation: type, data, text to approve, business logic
 │   ├── ConfirmableOperations.java           all of them: prepare persists at the start, execute reloads and applies at the callback
-│   ├── JdbcPendingOperationRepository.java  operations waiting for their confirmation (pending_operation, JSON data)
+│   ├── JpaPendingOperationRepository.java   operations waiting for their confirmation (pending_operation, JSON data)
+│   ├── StoredPendingOperation(Repository)   its JPA entity and Spring Data repository
 │   └── OperationException.java              not started or not executed: error code
 ├── security/SecurityConfig.java             stateless filter chain
 ├── customer/                                customer lookup (stands in for the existing customer table)
@@ -279,7 +283,8 @@ src/main/java/com/example/voltahome
 │                                            chain (DemoController, DemoSecurityConfig), the confirmation start
 │                                            (DemoConfirmationController) and execution
 │                                            (DemoConfirmedOperationExecutor), two confirmable operations
-│                                            (DemoOrderConfirmation, DemoOfferAcceptance), confirmed operations
+│                                            (DemoOrderConfirmation, DemoOfferAcceptance) with their JPA entities
+│                                            and repositories (DemoProduct, DemoOrder, DemoOffer), confirmed operations
 │                                            (DemoConfirmedOperations), the SPA's routes (DemoWebConfig)
 └── local/                                   LOCAL ONLY (profile "local"): the itsme stub, a stand-in for itsme
     ├── ItsmeStubController.java             the stub's endpoints and its approval page (/itsme-stub/v2)
@@ -410,7 +415,17 @@ Why the nested check matters: anyone holding the client secret can encrypt a tok
 
 ## Login in progress
 
-Between the redirect to itsme and the callback, `state`, `nonce` and `code_verifier`, and the hand-over begun by the SPA (see [Hand-over](#hand-over)), must survive, possibly on another instance. `JdbcAuthorizationRequestRepository` stores them in `itsme_authorization_request` for 5 minutes. At callback time the row is read and deleted; checking the number of deleted rows makes it single-use without database-specific SQL, even when two callbacks arrive at the same time. Abandoned rows are purged every 15 minutes.
+Between the redirect to itsme and the callback, `state`, `nonce` and `code_verifier`, and the hand-over begun by the SPA (see [Hand-over](#hand-over)), must survive, possibly on another instance. `JpaAuthorizationRequestRepository` stores them in `itsme_authorization_request` for 5 minutes. At callback time the row is read and deleted; checking the number of deleted rows makes it single-use without database-specific SQL, even when two callbacks arrive at the same time. Abandoned rows are purged every 15 minutes.
+
+### Database access
+
+The tables are read and written with **Spring Data JPA**. Each table has an entity and a repository interface, kept as small as possible: saving and reading by id are the methods `JpaRepository` already has (`save`, `findById`), and the expiry is checked in Java (`isValidAt`). An interface only declares what Spring Data cannot provide: the checked deletes and conditional updates below, and the finders that must be limited to a customer. `schema.sql` creates the tables, and Hibernate only checks at startup that the entities match them (`spring.jpa.hibernate.ddl-auto: validate`). Three choices matter for the single-use rule (rule 11):
+
+- **A checked delete is a query, not `deleteById`.** `deleteById` loads the row, removes it and returns nothing. The repositories declare `@Modifying @Query("delete ...")` methods that return `int`: one `DELETE` statement, and the number of rows it deleted. Each interface is `@Transactional`, so these statements can also run outside a transaction (the scheduled purges). The same goes for the conditional updates (`StoredHandoverRepository.complete`, `DemoOfferRepository.accept`). The queries are JPQL: no database-specific SQL.
+- **A row is inserted, never merged.** The ids are assigned by the application (`state`, a UUID), so Spring Data's `save()` would first look for the row and update it if it exists. The `Stored*` entities implement `Persistable` with `isNew()` always true: `save()` is an `INSERT`, and a second row with the same `state` fails instead of replacing the first.
+- **No open session in view** (`spring.jpa.open-in-view: false`): a database session lasts one transaction, not the whole request, and the read and the delete of a single-use row are in the same transaction (`@Transactional`).
+
+The tables that are only read (`customer`, `itsme_link`, the demo's `product`) have repositories that extend `Repository`, which has no `save()`.
 
 ---
 
@@ -420,7 +435,7 @@ Between the redirect to itsme and the callback, `state`, `nonce` and `code_verif
 
 | Setting | Default replaced |
 |---|---|
-| `JdbcAuthorizationRequestRepository` | `HttpSessionOAuth2AuthorizationRequestRepository` |
+| `JpaAuthorizationRequestRepository` | `HttpSessionOAuth2AuthorizationRequestRepository` |
 | `NoOpAuthorizedClientRepository` | `HttpSessionOAuth2AuthorizedClientRepository` |
 | `RequestAttributeSecurityContextRepository` | `HttpSessionSecurityContextRepository` |
 | `NullRequestCache` | `HttpSessionRequestCache` |
@@ -480,7 +495,7 @@ The `demo` package shows the shape of a real application, with stand-ins:
 
 The signing key is generated at startup and kept in memory: a restart logs everyone out, and several instances would not share it. It is a demo, not a token design. The itsme login itself never makes a later request authenticated (`RequestAttributeSecurityContextRepository` keeps it for the callback request only); only the application's own token does. `DemoTokenTest` lists the attacks on the demo token.
 
-Tests (`ItsmeLoginFlowTest`, nested class `Handover`): `loginStartedWithoutBrowserCodeChallengeCannotBeHandedOver`, `loginStartedWithALinkCannotBeHandedOver`, `browserCodeChallengeIsKeptWithTheLoginAndNotSentToItsme`, `browserCodeChallengeAloneCannotRedeemTheCode`, `loginCodeWithoutBrowserCodeVerifierIsRefused`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `handoverReturnsTheTokenAndOurCustomerDataAsJson`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `handoverCodeCannotBeReplayed`, `unknownHandoverCodeIsRefused`, `handoverCodeExpiresAfterSixtySecondsAndIsPurged`, `failedLoginLeavesNothingToRedeem`, `noCookieIsSetDuringTheWholeFlow`. The same attacks on the hand-over of a confirmation are in `ItsmeConfirmationFlowTest`, nested class `Handover`: see [Confirmation of an operation](#tests).
+Tests (`ItsmeLoginFlowTest`, nested class `Handover`): `loginStartedWithoutBrowserCodeChallengeCannotBeHandedOver`, `loginStartedWithALinkCannotBeHandedOver`, `browserCodeChallengeIsKeptWithTheLoginAndNotSentToItsme`, `secondFlowWithTheSameStateDoesNotReplaceTheFirst`, `browserCodeChallengeAloneCannotRedeemTheCode`, `loginCodeWithoutBrowserCodeVerifierIsRefused`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `handoverReturnsTheTokenAndOurCustomerDataAsJson`, `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `handoverCodeCannotBeReplayed`, `unknownHandoverCodeIsRefused`, `handoverCodeExpiresAfterSixtySecondsAndIsPurged`, `failedLoginLeavesNothingToRedeem`, `noCookieIsSetDuringTheWholeFlow`. The same attacks on the hand-over of a confirmation are in `ItsmeConfirmationFlowTest`, nested class `Handover`: see [Confirmation of an operation](#tests).
 
 ---
 
@@ -503,11 +518,11 @@ Because itsme returns no proof, **the application's own checks are what make an 
 
 | Question | Answered by | Code |
 |---|---|---|
-| Is this answer for this confirmation? | `state` (single use, 5 minutes), `nonce`, PKCE | `JdbcConfirmationRequestRepository`, Spring's `OidcAuthorizationCodeAuthenticationProvider` |
+| Is this answer for this confirmation? | `state` (single use, 5 minutes), `nonce`, PKCE | `JpaConfirmationRequestRepository`, Spring's `OidcAuthorizationCodeAuthenticationProvider` |
 | Which text is shown to the customer? | Text built on the server from the data of the operation, sent in the `claims` parameter; never read from the callback | `ConfirmableOperation.approvalText`, `ItsmeClaims.confirmation` |
 | Is the operation the customer's? | The data is built for the logged-in customer at the start; a record that already exists (an offer) is read for that customer only, at the start and again at execution; an order is created for that customer | `ConfirmableOperation` implementations (`operation_not_found`) |
 | Which operation does the approval execute? | The type and reference stored at the start, never the callback URL and never a later request; the reference is a pending operation, reloaded for the same customer and type | `ConfirmableOperations.execute` (`unknown_operation`, `operation_not_found`) |
-| Is it the customer who started it? | Only a call with that customer's bearer token can start a confirmation and create its `state`; the callback finds the customer through that single-use `state` | `ItsmeConfirmationService.start`, `JdbcConfirmationRequestRepository` (`confirmation_not_found`) |
+| Is it the customer who started it? | Only a call with that customer's bearer token can start a confirmation and create its `state`; the callback finds the customer through that single-use `state` | `ItsmeConfirmationService.start`, `JpaConfirmationRequestRepository` (`confirmation_not_found`) |
 | **Was it approved by the right person?** | The ID token `sub` must be the itsme account linked to that customer *now*. Any other itsme account is refused and reported as a fraud signal (`WRONG_ITSME_ACCOUNT`) | `ItsmeConfirmationService.complete` (`wrong_person`) |
 | Was the itsme code used? | `acr_advanced`, as for the login | `AcrValidator` |
 | Is the ID token from itsme? | Nested signed JWT, decryption, signature, `iss`, `aud`, `exp` | The same decoder as the login (`idTokenDecoderFactory`) |
@@ -531,9 +546,9 @@ Without the `sub` check, any itsme account could approve the operation, for exam
 A real application asks for confirmation of several kinds of operations: place an order, accept an offer, and so on. The record may not exist before the confirmation: in the demo, an order is created in `customer_order` only once it is confirmed, while an offer already exists in `offer` and is accepted. So an operation works from its **data**: everything needed to execute it, persisted as a JSON document in an intermediate table, `pending_operation`. `ConfirmableOperations` has two steps: **prepare persists** the data when the confirmation starts, and **execute reloads** it, then applies the business logic, once itsme has confirmed. The operations share one itsme confirmation service and one callback (`/itsme/confirmation/callback`), so there is one redirect URI to register with itsme:
 
 - **One start endpoint per operation** (`POST /api/orders/confirm`, `POST /api/offers/{id}/accept`). The endpoint fixes the type and builds the data on the server, **for the logged-in customer**: the SPA sends a product code, and the description and the price come from the catalogue (`DemoOrderConfirmation.draft`); for an offer, the data is its id. An unknown product, an offer of another customer, or one that is no longer open, is refused (`operation_not_found`) before anything is persisted or sent to itsme.
-- **Prepare persists.** `ConfirmableOperations.prepare` builds the text from the data, then inserts a row in `pending_operation` (`JdbcPendingOperationRepository.save`): the customer, the type, and the data as JSON in a text column (at most 4000 characters, no database-specific JSON type), written by Jackson from the record the operation declares (`ConfirmableOperation.dataType`). Nothing is written to the application's own tables. The id of that row is the **reference** of the operation: `itsme/` stores the type and the reference with the confirmation in progress (`itsme_confirmation_request.operation_type`, `operation_reference`) without interpreting them, and carries them in the `ItsmeConfirmationResult`.
+- **Prepare persists.** `ConfirmableOperations.prepare` builds the text from the data, then inserts a row in `pending_operation` (`JpaPendingOperationRepository.save`): the customer, the type, and the data as JSON in a text column (at most 4000 characters, no database-specific JSON type), written by Jackson from the record the operation declares (`ConfirmableOperation.dataType`). Nothing is written to the application's own tables. The id of that row is the **reference** of the operation: `itsme/` stores the type and the reference with the confirmation in progress (`itsme_confirmation_request.operation_type`, `operation_reference`) without interpreting them, and carries them in the `ItsmeConfirmationResult`.
 - **Execute reloads, then applies the business logic.** The callback checks itsme's answer and has the operation executed (`ItsmeConfirmationService.complete`). `ConfirmableOperations.execute` picks the operation by the **stored** type, reloads the pending operation by the **stored** reference, for that customer and that type only, deletes it (single use: read, then checked delete), and gives the data to `ConfirmableOperation.execute`, which only holds the business logic. All in one transaction: the pending operation is deleted only if the operation is executed. Nothing in the callback URL chooses the operation. An unknown type is refused (`unknown_operation`); a pending operation that does not exist, has expired, is another customer's or of another type, or holds data the operation cannot read, is refused too (`operation_not_found`).
-- **What was approved is what is executed.** The order is created from the persisted data: the description and the price the customer read in the itsme app, even if the catalogue changed in between. Each confirmation creates one order, because its `state` and its pending operation are single use. An operation on an existing record checks it again: accepting an offer is a conditional update limited to the customer and to an open offer (`WHERE offer_id = :id AND customer_id = :customer AND status = 'OPEN'`), accepted only if one row changed. Otherwise nothing is executed (`operation_not_found`): this also stops two approvals of the same offer from accepting it twice.
+- **What was approved is what is executed.** The order is created from the persisted data: the description and the price the customer read in the itsme app, even if the catalogue changed in between. Each confirmation creates one order, because its `state` and its pending operation are single use. An operation on an existing record checks it again: accepting an offer is a conditional update limited to the customer and to an open offer (`where o.offerId = :offerId and o.customerId = :customerId and o.status = 'OPEN'`, `DemoOfferRepository.accept`), accepted only if one row changed. Otherwise nothing is executed (`operation_not_found`): this also stops two approvals of the same offer from accepting it twice.
 - **Never confirmed, never executed.** A pending operation whose confirmation is refused in itsme, fails a check or is abandoned stays in `pending_operation` until it is purged (10 minutes, longer than the 5 minutes of a confirmation in progress). Nothing can execute it: only the single-use `state` of its confirmation leads to it.
 - **Each type is unique.** Two operations with the same type stop the application at startup: a confirmation of one could execute the other.
 - **The SPA lands on the right record.** The execution returns the reference of the record it created or changed (the id of the new order, of the accepted offer). The redemption gives it to the SPA with the new token, and the SPA reloads that record from the API (see [Hand-over](#hand-over), "What the SPA keeps during the round trip to itsme").
@@ -631,7 +646,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 | 8 | **Static endpoints, no `issuer-uri`.** The discovery document is an alarm, never a source of configuration. | Startup must not depend on reaching itsme, and the hosts must be known in advance for proxies and firewalls. | `discoveryCheckReportsAMovedEndpoint`, `discoveryCheckReportsUnreachableItsme` |
 | 9 | **Explicit outbound proxy** on the `RestClient` and on the Nimbus `DefaultResourceRetriever`. | JVM-wide proxy settings change without notice; the route to itsme must be visible in the itsme configuration. | Code review (no automated test) |
 | 10 | **The itsme stub refuses non-localhost endpoints** (`ItsmeStubGuard`). | A fake itsme must never reach a shared environment. | `itsmeStubIsRefusedWithARealItsmeEndpoint` |
-| 11 | **Single-use login state, confirmation state, pending operations and hand-over codes:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL. | Two callbacks with the same `state`, or two redemptions of the same code (double click, replay), must not both succeed; a confirmation must be executed once. | `callbackCannotBeReplayed` (login and confirmation), `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged`, `handoverCodeCannotBeReplayed`, `confirmationCodeCannotBeRedeemedTwice`, `orderIsCreatedFromTheReloadedData` |
+| 11 | **Single-use login state, confirmation state, pending operations and hand-over codes:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL: the delete is a JPQL query that returns the number of rows deleted, and a row is inserted, never merged (see [Database access](#database-access)). | Two callbacks with the same `state`, or two redemptions of the same code (double click, replay), must not both succeed; a confirmation must be executed once. | `callbackCannotBeReplayed` (login and confirmation), `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged`, `handoverCodeCannotBeReplayed`, `confirmationCodeCannotBeRedeemedTwice`, `orderIsCreatedFromTheReloadedData`, `secondFlowWithTheSameStateDoesNotReplaceTheFirst` |
 | 12 | **No cookie, and no token or result in a URL.** Each callback, of the login and of the confirmation, redirects to the SPA with a one-time code in the fragment; redeeming it requires the browser code verifier whose hash the SPA sent in the start request, and a code of one flow cannot end the other. | A token in a URL leaks (history, logs, `Referer`); a code without verifier can be redeemed in another browser (login CSRF, or a token for whoever sees the callback link). | `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment` (login and confirmation), `browserCodeChallengeAloneCannotRedeemTheCode` (login and confirmation), `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `loginCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCannotBeStartedWithoutBrowserCodeChallenge`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `noCookieIsSetDuringTheWholeFlow`, `noCookieIsSetDuringTheWholeConfirmation` |
 | 13 | **A confirmation executes the operation stored at its start, for that customer, once itsme's answer has passed every check.** The execution happens at the callback, only after the `state`, the ID token and the linked `sub` are checked (`wrong_person` otherwise), and does not depend on the redemption that follows. The data is built on the server and persisted at the start (`pending_operation`); the operation type and the reference of that pending operation are stored with the confirmation in progress, never taken from the callback URL or from a later request; the pending operation is reloaded for the same customer and the same type only. Each `ConfirmableOperation` limits every query to the customer; an operation on an existing record executes it with a conditional update limited to the customer and to an open record, accepted only if exactly one row changed. Operation types are unique. | Otherwise an approval of one operation could execute another: one chosen in the callback URL, another customer's, one of another type, one with a price the customer did not read, or the same record a second time. | `callbackExecutesTheOperationWhetherTheCodeIsRedeemedOrNot`, `unknownItsmeAccountCannotConfirmAndIsReported`, `operationInTheCallbackUrlIsIgnored`, `priceAndDescriptionCannotBeChosenByTheRequest`, `priceChangedAfterTheStartDoesNotChangeTheConfirmedOrder`, `offerOfAnotherCustomerCannotBeSentForConfirmation`, `pendingOperationOfAnotherCustomerIsNotExecuted`, `pendingOperationOfAnotherTypeIsNotExecuted`, `unknownPendingOperationIsNotExecuted`, `persistedOfferOfAnotherCustomerIsNotExecuted`, `offerAcceptedInTheMeantimeIsNotExecutedTwice`, `unknownOperationTypeIsRefused`, `duplicateOperationTypeFailsAtStartup` |
 
@@ -642,7 +657,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 1. Copy the `itsme` and `security` packages; adapt the package names. Keep the [rules](#rules-you-must-not-change) and their tests.
 2. Replace `customer/` with the application's customer lookup and `fraud/` with the real fraud monitoring.
 3. Implement `LoginHandover` and `ConfirmationHandover` with the application's token management, and the SPA's calls ([docs/spa-handover.md](docs/spa-handover.md)); set the `app.*` URLs to the SPA's routes. Delete `demo/` and `local/` (or keep `local/` for local development only).
-4. Create the tables of `schema.sql` (except `customer`) in the application's database, and decide how `itsme_link` rows are created: the login only reads them (see [Authentication, not identification](#authentication-not-identification)).
+4. Create the tables of `schema.sql` (except `customer`) in the application's database (keep `ddl-auto: validate`, or `none`: Hibernate must not create them), and decide how `itsme_link` rows are created: the login only reads them (see [Authentication, not identification](#authentication-not-identification)).
 5. Store the client secret in the vault.
 6. Fill in the configuration per environment from itsme onboarding and the discovery document; give itsme the redirect URIs.
 7. Ask itsme to enforce PKCE for the client.

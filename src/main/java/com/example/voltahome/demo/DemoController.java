@@ -60,11 +60,11 @@ class DemoController {
                 .map(Customer::displayName)
                 .orElse(customerId);
         List<Operation> operations = new ArrayList<>();
-        for (DemoOrderConfirmation.Product product : orders.products()) {
+        for (DemoProduct product : orders.products()) {
             operations.add(new Operation(product.description() + ", EUR " + product.price().toPlainString(),
                     "/api/orders/confirm", "Order", Map.of("productCode", product.productCode())));
         }
-        for (DemoOfferAcceptance.Offer offer : offers.openOffers(customerId)) {
+        for (DemoOffer offer : offers.openOffers(customerId)) {
             operations.add(new Operation("Offer " + offer.offerId() + ": " + offer.description() + ", EUR "
                     + offer.pricePerKwh().toPlainString() + " per kWh", "/api/offers/" + offer.offerId() + "/accept",
                     "Accept offer", Map.of()));

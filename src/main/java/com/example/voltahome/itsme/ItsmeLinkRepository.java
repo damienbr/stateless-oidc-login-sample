@@ -1,38 +1,29 @@
 package com.example.voltahome.itsme;
 
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
 
-import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.stereotype.Repository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * README: "Customer mapping". Links between a customer and an itsme account ("sub"), one per customer and vice versa.
- * Read-only for the login: links are created outside it (README: "Authentication, not identification").
+ * Read-only for the login: links are created outside it (README: "Authentication, not identification"). That is why
+ * this interface extends Repository, which has no method, and not JpaRepository: there is no save() to call.
  */
-@Repository
-public class ItsmeLinkRepository {
+public interface ItsmeLinkRepository extends Repository<ItsmeLink, String> {
 
-    private final JdbcClient jdbc;
-
-    public ItsmeLinkRepository(JdbcClient jdbc) {
-        this.jdbc = jdbc;
-    }
-
-    public Optional<String> findCustomerBySub(String sub) {
-        return jdbc.sql("SELECT customer_id FROM itsme_link WHERE itsme_sub = :sub")
-                .param("sub", sub).query(String.class).optional();
-    }
+    @Query("select l.customerId from ItsmeLink l where l.itsmeSub = :sub")
+    Optional<String> findCustomerBySub(String sub);
 
     /** README: "Confirmation of an operation". The itsme account that may confirm the customer's operations. */
-    public Optional<String> findSubByCustomer(String customerId) {
-        return jdbc.sql("SELECT itsme_sub FROM itsme_link WHERE customer_id = :id")
-                .param("id", customerId).query(String.class).optional();
-    }
+    @Query("select l.itsmeSub from ItsmeLink l where l.customerId = :customerId")
+    Optional<String> findSubByCustomer(String customerId);
 
-    public void touch(String customerId, Instant now) {
-        jdbc.sql("UPDATE itsme_link SET last_login_at = :now WHERE customer_id = :id")
-                .param("id", customerId).param("now", Timestamp.from(now)).update();
-    }
+    @Modifying
+    @Transactional
+    @Query("update ItsmeLink l set l.lastLoginAt = :now where l.customerId = :customerId")
+    void touch(String customerId, Instant now);
 }

@@ -1,12 +1,10 @@
 package com.example.voltahome.operation;
 
-import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -19,7 +17,7 @@ import org.springframework.stereotype.Component;
  * delete, without database-specific SQL.
  */
 @Component
-public class JdbcPendingOperationRepository {
+public class JpaPendingOperationRepository {
 
     /** Longer than a confirmation in progress (5 minutes): a confirmation never finds its operation gone. */
     static final Duration TTL = Duration.ofMinutes(10);
@@ -27,11 +25,11 @@ public class JdbcPendingOperationRepository {
     /** Size of the data column (schema.sql). */
     static final int MAX_DATA_LENGTH = 4000;
 
-    private final JdbcClient jdbc;
+    private final StoredPendingOperationRepository operations;
     private final Clock clock;
 
-    public JdbcPendingOperationRepository(JdbcClient jdbc, Clock clock) {
-        this.jdbc = jdbc;
+    public JpaPendingOperationRepository(StoredPendingOperationRepository operations, Clock clock) {
+        this.operations = operations;
         this.clock = clock;
     }
 
@@ -41,16 +39,7 @@ public class JdbcPendingOperationRepository {
             throw new IllegalArgumentException("operation data must have at most " + MAX_DATA_LENGTH + " characters");
         }
         String id = UUID.randomUUID().toString();
-        jdbc.sql("""
-                INSERT INTO pending_operation (operation_id, customer_id, operation_type, data, expires_at)
-                VALUES (:id, :customer, :type, :data, :expiresAt)
-                """)
-                .param("id", id)
-                .param("customer", customerId)
-                .param("type", type)
-                .param("data", data)
-                .param("expiresAt", Timestamp.from(clock.instant().plus(TTL)))
-                .update();
+        operations.save(new StoredPendingOperation(id, customerId, type, data, clock.instant().plus(TTL)));
         return id;
     }
 
@@ -61,28 +50,20 @@ public class JdbcPendingOperationRepository {
      * with it.
      */
     public Optional<String> take(String id, String customerId, String type) {
-        Optional<String> data = jdbc.sql("""
-                SELECT data FROM pending_operation
-                WHERE operation_id = :id AND customer_id = :customer AND operation_type = :type AND expires_at > :now
-                """)
-                .param("id", id)
-                .param("customer", customerId)
-                .param("type", type)
-                .param("now", Timestamp.from(clock.instant()))
-                .query(String.class)
-                .optional();
+        Optional<String> data = operations
+                .findByOperationIdAndCustomerIdAndOperationType(id, customerId, type)
+                .filter(stored -> stored.isValidAt(clock.instant()))
+                .map(StoredPendingOperation::data);
         if (data.isEmpty()) {
             return Optional.empty();
         }
-        int deleted = jdbc.sql("DELETE FROM pending_operation WHERE operation_id = :id").param("id", id).update();
+        int deleted = operations.deleteByOperationId(id);
         return deleted == 1 ? data : Optional.empty();       // 0 = already taken by a concurrent execution
     }
 
     /** Removes operations never confirmed. Idempotent: safe to run on several instances. */
     @Scheduled(fixedDelayString = "PT15M")
     public void purgeExpired() {
-        jdbc.sql("DELETE FROM pending_operation WHERE expires_at < :now")
-                .param("now", Timestamp.from(clock.instant()))
-                .update();
+        operations.deleteExpired(clock.instant());
     }
 }

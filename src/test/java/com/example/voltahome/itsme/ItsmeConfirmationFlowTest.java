@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.function.UnaryOperator;
 
 import com.example.voltahome.fraud.FraudSignal;
-import com.example.voltahome.operation.JdbcPendingOperationRepository;
+import com.example.voltahome.operation.JpaPendingOperationRepository;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
@@ -695,7 +695,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
             StartedConfirmation started = startConfirmation(alex);
             stubTokenEndpoint(idToken(started.nonce()).build());
 
-            clock.advance(JdbcConfirmationRequestRepository.TTL.plus(Duration.ofSeconds(1)));
+            clock.advance(JpaConfirmationRequestRepository.TTL.plus(Duration.ofSeconds(1)));
 
             confirmationCallback(started.state())
                     .andExpect(redirectedUrl("/confirmation-error?error=confirmation_not_found"));
@@ -740,9 +740,9 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     // ------------------------------------------------------------------ helpers
 
-    @Autowired JdbcConfirmationRequestRepository confirmationRequests;
+    @Autowired JpaConfirmationRequestRepository confirmationRequests;
     @Autowired ItsmeHandover handover;
-    @Autowired JdbcPendingOperationRepository pendingOperationRepository;
+    @Autowired JpaPendingOperationRepository pendingOperationRepository;
 
     private record StartedConfirmation(String location, String state, String nonce) {}
 

@@ -7,7 +7,15 @@ spring:
     password: ""
   sql:
     init:
-      mode: always
+      mode: always                # schema.sql creates the tables, data.sql fills them
+  jpa:
+    open-in-view: false           # no database session kept open for the whole request
+    hibernate:
+      ddl-auto: validate          # Hibernate never creates or changes a table; it checks that the entities match
+    properties:
+      hibernate:
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP   # Instant fields are stored in plain TIMESTAMP columns
 
 # itsme configuration — see README "Configuration".
 # Endpoints are static (proxies and firewalls are configured in advance).

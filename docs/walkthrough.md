@@ -174,23 +174,30 @@ An attacker who cannot link an account will try to make the login identify them 
 
 | Spring default | Replaced by |
 |---|---|
-| `HttpSessionOAuth2AuthorizationRequestRepository` | `JdbcAuthorizationRequestRepository`, our own (below) |
+| `HttpSessionOAuth2AuthorizationRequestRepository` | `JpaAuthorizationRequestRepository`, our own (below) |
 | `HttpSessionOAuth2AuthorizedClientRepository` | `NoOpAuthorizedClientRepository`: we never use the itsme access token after login, so we don't keep it |
 | `HttpSessionSecurityContextRepository` | `RequestAttributeSecurityContextRepository` |
 | `HttpSessionRequestCache` | `NullRequestCache` |
 | `SavedRequestAwareAuthenticationSuccessHandler` | Our own success handler |
 
-**The fix, part 2: keep the login in progress in the database.** We already have a database, so we use it. The table `itsme_authorization_request` holds one row per login in progress, keyed by `state`, valid for five minutes. At callback time, [`JdbcAuthorizationRequestRepository`](../src/main/java/com/example/voltahome/itsme/JdbcAuthorizationRequestRepository.java) reads the row and deletes it:
+**The fix, part 2: keep the login in progress in the database.** We already have a database, so we use it. The table `itsme_authorization_request` holds one row per login in progress, keyed by `state`, valid for five minutes. At callback time, [`JpaAuthorizationRequestRepository`](../src/main/java/com/example/voltahome/itsme/JpaAuthorizationRequestRepository.java) reads the row and deletes it:
 
 ```java
 Optional<OAuth2AuthorizationRequest> found = find(state);        // only rows not yet expired
 if (found.isEmpty()) {
     return null;
 }
-int deleted = jdbc.sql("DELETE FROM itsme_authorization_request WHERE state = :state")
-        .param("state", state)
-        .update();
+int deleted = requests.deleteByState(state);
 return deleted == 1 ? found.get() : null;    // 0 = another callback already used it
+```
+
+`requests` is a Spring Data JPA repository, and `deleteByState` is one `DELETE` statement that returns the number of rows it deleted:
+
+```java
+@Modifying
+@Transactional
+@Query("delete from StoredAuthorizationRequest r where r.state = :state")
+int deleteByState(String state);
 ```
 
 Why check the number of deleted rows? Because two callbacks with the same `state` can arrive at the same moment, for example after a double click or a replay attempt. Both can read the row, but only one can delete it. The one that deletes nothing gets `null`, and Spring rejects it. This gives single use without any database-specific SQL. A scheduled job removes the rows of logins that were never completed.

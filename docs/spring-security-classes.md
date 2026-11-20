@@ -134,7 +134,7 @@ Our resolver also begins the hand-over: when the request is a POST with a valid 
 
 **`OAuth2AuthorizationRequest`** (Spring) — *files: several in `itsme/`*
 
-The authorization request as an object: the itsme URL to redirect to, our client id, the redirect URI, the scopes, the `state`, extra URL parameters, and *attributes*. Attributes are values that are not sent to itsme but must be kept for the callback: the `nonce` and the PKCE `code_verifier`. It is the object that `JdbcAuthorizationRequestRepository` saves and loads.
+The authorization request as an object: the itsme URL to redirect to, our client id, the redirect URI, the scopes, the `state`, extra URL parameters, and *attributes*. Attributes are values that are not sent to itsme but must be kept for the callback: the `nonce` and the PKCE `code_verifier`. It is the object that `JpaAuthorizationRequestRepository` saves and loads.
 
 **`OAuth2AuthorizationRequestResolver`** (Spring interface) and **`ItsmeAuthorizationRequestResolver`** (ours) — *file: `itsme/ItsmeAuthorizationRequestResolver.java`*
 
@@ -152,13 +152,13 @@ A ready-made customizer that adds PKCE to the request: it generates a secret `co
 
 Between the redirect to itsme and the callback, the backend must remember the `state`, the `nonce` and the `code_verifier`. Without them, the callback cannot be checked.
 
-**`AuthorizationRequestRepository`** (Spring interface) and **`JdbcAuthorizationRequestRepository`** (ours) — *file: `itsme/JdbcAuthorizationRequestRepository.java`*
+**`AuthorizationRequestRepository`** (Spring interface) and **`JpaAuthorizationRequestRepository`** (ours) — *file: `itsme/JpaAuthorizationRequestRepository.java`*
 
-The repository has three methods: save the request before the redirect, load it at the callback, remove it once it is used. The default implementation keeps it in the session; ours stores it in the database table `itsme_authorization_request`, keyed by `state`, for 5 minutes. Any instance of the backend can then handle the callback, even if the redirect was served by another one.
+The repository has three methods: save the request before the redirect, load it at the callback, remove it once it is used. The default implementation keeps it in the session; ours stores it in the database table `itsme_authorization_request`, keyed by `state`, for 5 minutes, through a Spring Data JPA repository (`StoredAuthorizationRequestRepository`, entity `StoredAuthorizationRequest`). Any instance of the backend can then handle the callback, even if the redirect was served by another one.
 
-`removeAuthorizationRequest` is the method to read carefully (design rule 11): it reads the row, then deletes it and checks that exactly one row was deleted. If two callbacks with the same `state` arrive at the same time, only one gets the request; the other gets `null`, and Spring refuses that login with `authorization_request_not_found`. This makes each login attempt single-use.
+`removeAuthorizationRequest` is the method to read carefully (design rule 11): it reads the row, then deletes it with one `DELETE` query that returns the number of rows deleted (`deleteByState`), and checks that exactly one row was deleted. If two callbacks with the same `state` arrive at the same time, only one gets the request; the other gets `null`, and Spring refuses that login with `authorization_request_not_found`. This makes each login attempt single-use.
 
-**`OAuth2ParameterNames`, `OidcParameterNames`, `PkceParameterNames`** (Spring) — *file: `itsme/JdbcAuthorizationRequestRepository.java`*
+**`OAuth2ParameterNames`, `OidcParameterNames`, `PkceParameterNames`** (Spring) — *file: `itsme/JpaAuthorizationRequestRepository.java`*
 
 Constants for parameter and attribute names (`state`, `registration_id`, `nonce`, `code_verifier`). Using them instead of string literals guarantees that we read and write exactly the keys Spring expects.
 
@@ -322,7 +322,7 @@ A second registration with the same client id, the confirmation's itsme service 
 
 The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), given an `InMemoryClientRegistrationRepository` that holds only the confirmation registration. It generates `state`, `nonce` and PKCE, and a customizer adds `acr_values`. `start` then adds the `claims` parameter, with the `free_text` template, the text to approve and the `sub` linked to the customer: `OAuth2AuthorizationRequest.from(...)` copies the request without its URI, so `build()` writes a new URI that includes `claims`.
 
-**`JdbcConfirmationRequestRepository`** (ours) — *file: `itsme/JdbcConfirmationRequestRepository.java`*
+**`JpaConfirmationRequestRepository`** (ours) — *file: `itsme/JpaConfirmationRequestRepository.java`*
 
 Not a Spring interface: the confirmation is not handled by `oauth2Login()`, so nothing calls an `AuthorizationRequestRepository`. It stores the same protocol values as [section 6](#6-remembering-the-login-in-progress), plus the customer and the operation (its type, and its reference: the id of the pending operation the application persisted, since the record to create may not exist yet), in `itsme_confirmation_request`, with the same read-then-checked-delete.
 
@@ -349,7 +349,7 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `@AuthenticationPrincipal` | Spring | [11](#11-after-the-login-the-protected-api) | `demo/DemoController.java`, `demo/DemoConfirmationController.java` |
 | `AuthenticationSuccessHandler` | Spring | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginSuccessHandler.java` |
 | `AuthorizationGrantType` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
-| `AuthorizationRequestRepository` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java` |
+| `AuthorizationRequestRepository` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JpaAuthorizationRequestRepository.java` |
 | `BadJwtException` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeCrypto.java` |
 | `ClientAuthenticationMethod` | Spring | [4](#4-describing-itsme-to-spring) | `itsme/ItsmeClientConfig.java` |
 | `ClientRegistration` | Spring | [4](#4-describing-itsme-to-spring), [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeClientConfig.java` |
@@ -370,8 +370,8 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `ItsmeLoginSuccessHandler` | ours | [10](#10-the-end-of-the-login-success-or-failure) | `itsme/ItsmeLoginSuccessHandler.java` |
 | `ItsmeOidcUserService` | ours | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |
 | `ItsmeStubSecurityConfig` | ours (local) | [1](#1-building-the-filter-chain) | `local/ItsmeStubSecurityConfig.java` |
-| `JdbcAuthorizationRequestRepository` | ours | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java` |
-| `JdbcConfirmationRequestRepository` | ours | [12](#12-confirming-an-operation-from-the-portal) | `itsme/JdbcConfirmationRequestRepository.java` |
+| `JpaAuthorizationRequestRepository` | ours | [6](#6-remembering-the-login-in-progress) | `itsme/JpaAuthorizationRequestRepository.java` |
+| `JpaConfirmationRequestRepository` | ours | [12](#12-confirming-an-operation-from-the-portal) | `itsme/JpaConfirmationRequestRepository.java` |
 | `Jwt` | Spring | [8](#8-checking-the-id-token), [11](#11-after-the-login-the-protected-api) | `itsme/AcrValidator.java`, `demo/DemoController.java`, `demo/DemoConfirmationController.java` |
 | `JwtAuthenticationToken` | Spring | [11](#11-after-the-login-the-protected-api) | created by `BearerTokenAuthenticationFilter` |
 | `JwtDecoder` | Spring | [8](#8-checking-the-id-token), [11](#11-after-the-login-the-protected-api) | `itsme/ItsmeClientConfig.java`, `demo/DemoToken.java` |
@@ -400,17 +400,17 @@ The provider's input and output. The exchange pairs the request we sent, rebuilt
 | `OAuth2ErrorResponseErrorHandler` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java` |
 | `OAuth2LoginAuthenticationFilter` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | added by `oauth2Login()` |
 | `OAuth2LoginAuthenticationToken` | Spring | [12](#12-confirming-an-operation-from-the-portal) | `itsme/ItsmeConfirmationService.java` |
-| `OAuth2ParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
+| `OAuth2ParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JpaAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
 | `OAuth2TokenValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/AcrValidator.java` |
 | `OAuth2TokenValidatorResult` | Spring | [8](#8-checking-the-id-token) | `itsme/AcrValidator.java` |
 | `OAuth2UserService` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |
 | `OidcAuthorizationCodeAuthenticationProvider` | Spring | [7](#7-step-two-the-callback-and-the-token-request), [12](#12-confirming-an-operation-from-the-portal) | added by `oauth2Login()`; `itsme/ItsmeConfirmationService.java` |
 | `OidcIdToken` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeConfirmationService.java` |
 | `OidcIdTokenValidator` | Spring | [8](#8-checking-the-id-token) | `itsme/ItsmeClientConfig.java` |
-| `OidcParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
+| `OidcParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JpaAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
 | `OidcUser` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java`, `itsme/ItsmeLoginSuccessHandler.java`, `itsme/ItsmeConfirmationService.java` |
 | `OidcUserRequest` | Spring | [9](#9-turning-the-id-token-into-a-user) | `itsme/ItsmeOidcUserService.java` |
-| `PkceParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JdbcAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
+| `PkceParameterNames` | Spring | [6](#6-remembering-the-login-in-progress) | `itsme/JpaAuthorizationRequestRepository.java`, `itsme/ItsmeConfirmationService.java` |
 | `RequestAttributeSecurityContextRepository` | Spring | [3](#3-staying-stateless) | `security/SecurityConfig.java`, `demo/DemoSecurityConfig.java` |
 | `RestClientAuthorizationCodeTokenResponseClient` | Spring | [7](#7-step-two-the-callback-and-the-token-request) | `itsme/ItsmeClientConfig.java` |
 | `SecurityFilterChain` | Spring | [1](#1-building-the-filter-chain) | `security/SecurityConfig.java`, `local/ItsmeStubSecurityConfig.java`, `demo/DemoSecurityConfig.java` |

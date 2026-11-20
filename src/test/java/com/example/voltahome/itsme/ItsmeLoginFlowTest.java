@@ -31,6 +31,7 @@ import com.github.tomakehurst.wiremock.client.WireMock;
 import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -48,7 +49,7 @@ import org.springframework.web.util.UriComponentsBuilder;
  */
 class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
 
-    @Autowired JdbcAuthorizationRequestRepository authorizationRequests;
+    @Autowired JpaAuthorizationRequestRepository authorizationRequests;
     @Autowired RestClient itsmeRestClient;
 
     // ------------------------------------------------------------------ what we send (README "Authorization request")
@@ -341,6 +342,17 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
             StartedLogin started = startLogin();
 
             assertThat(decode(started.location())).doesNotContain(BROWSER_CODE_CHALLENGE);
+            assertThat(jdbc.sql("SELECT browser_code_challenge FROM itsme_handover WHERE state = :state")
+                    .param("state", started.state()).query(String.class).single()).isEqualTo(BROWSER_CODE_CHALLENGE);
+        }
+
+        @Test
+        void secondFlowWithTheSameStateDoesNotReplaceTheFirst() throws Exception {
+            // The row is inserted, never merged: a duplicate state fails instead of replacing the stored challenge
+            StartedLogin started = startLogin();
+
+            assertThatThrownBy(() -> handovers.begin(ItsmeHandover.Flow.LOGIN, started.state(), "A".repeat(43)))
+                    .isInstanceOf(DataIntegrityViolationException.class);
             assertThat(jdbc.sql("SELECT browser_code_challenge FROM itsme_handover WHERE state = :state")
                     .param("state", started.state()).query(String.class).single()).isEqualTo(BROWSER_CODE_CHALLENGE);
         }

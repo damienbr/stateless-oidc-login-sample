@@ -4,7 +4,7 @@ import com.example.voltahome.itsme.ItsmeAuthorizationRequestResolver;
 import com.example.voltahome.itsme.ItsmeLoginFailureHandler;
 import com.example.voltahome.itsme.ItsmeLoginSuccessHandler;
 import com.example.voltahome.itsme.ItsmeOidcUserService;
-import com.example.voltahome.itsme.JdbcAuthorizationRequestRepository;
+import com.example.voltahome.itsme.JpaAuthorizationRequestRepository;
 import com.example.voltahome.itsme.NoOpAuthorizedClientRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -24,7 +24,7 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http,
             ItsmeAuthorizationRequestResolver itsmeAuthorizationRequestResolver,
-            JdbcAuthorizationRequestRepository authorizationRequestRepository,
+            JpaAuthorizationRequestRepository authorizationRequestRepository,
             OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> itsmeTokenResponseClient,
             ItsmeOidcUserService itsmeOidcUserService,
             ItsmeLoginSuccessHandler successHandler,

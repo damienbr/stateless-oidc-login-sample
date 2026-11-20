@@ -6,7 +6,6 @@ import java.util.Optional;
 
 import com.example.voltahome.itsme.ItsmeFreeText;
 import com.example.voltahome.operation.ConfirmableOperation;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.keygen.KeyGenerators;
 import org.springframework.stereotype.Component;
 
@@ -25,14 +24,12 @@ class DemoOrderConfirmation implements ConfirmableOperation<DemoOrderConfirmatio
     /** Everything needed to create the order. Built here from the catalogue, never copied from the request. */
     record OrderData(String productCode, String description, BigDecimal amount) {}
 
-    record Product(String productCode, String description, BigDecimal price) {}
+    private final DemoProductRepository products;
+    private final DemoOrderRepository orders;
 
-    record Order(String orderId, String description, BigDecimal amount, String status) {}
-
-    private final JdbcClient jdbc;
-
-    DemoOrderConfirmation(JdbcClient jdbc) {
-        this.jdbc = jdbc;
+    DemoOrderConfirmation(DemoProductRepository products, DemoOrderRepository orders) {
+        this.products = products;
+        this.orders = orders;
     }
 
     @Override
@@ -47,11 +44,8 @@ class DemoOrderConfirmation implements ConfirmableOperation<DemoOrderConfirmatio
 
     /** The order the customer is about to confirm: the product as it is in the catalogue now. */
     Optional<OrderData> draft(String productCode) {
-        return jdbc.sql("SELECT * FROM product WHERE product_code = :code")
-                .param("code", productCode)
-                .query((rs, n) -> new OrderData(rs.getString("product_code"), rs.getString("description"),
-                        rs.getBigDecimal("price")))
-                .optional();
+        return products.findByProductCode(productCode)
+                .map(product -> new OrderData(product.productCode(), product.description(), product.price()));
     }
 
     @Override
@@ -68,15 +62,7 @@ class DemoOrderConfirmation implements ConfirmableOperation<DemoOrderConfirmatio
     @Override
     public Optional<String> execute(String customerId, OrderData order) {
         String orderId = "O-" + KeyGenerators.string().generateKey().toUpperCase();      // 16 hex characters
-        jdbc.sql("""
-                INSERT INTO customer_order (order_id, customer_id, description, amount, status)
-                VALUES (:id, :customer, :description, :amount, 'CONFIRMED')
-                """)
-                .param("id", orderId)
-                .param("customer", customerId)
-                .param("description", order.description())
-                .param("amount", order.amount())
-                .update();
+        orders.save(new DemoOrder(orderId, customerId, order.description(), order.amount(), "CONFIRMED"));
         return Optional.of(orderId);
     }
 
@@ -86,20 +72,12 @@ class DemoOrderConfirmation implements ConfirmableOperation<DemoOrderConfirmatio
                 .map(o -> new DemoController.OrderDto(o.orderId(), o.description(), o.amount(), o.status()));
     }
 
-    List<Product> products() {
-        return jdbc.sql("SELECT * FROM product ORDER BY product_code")
-                .query((rs, n) -> new Product(rs.getString("product_code"), rs.getString("description"),
-                        rs.getBigDecimal("price")))
-                .list();
+    List<DemoProduct> products() {
+        return products.findAllByOrderByProductCode();
     }
 
     /** The order of this customer. Another customer's order is never found. */
-    Optional<Order> find(String customerId, String orderId) {
-        return jdbc.sql("SELECT * FROM customer_order WHERE order_id = :id AND customer_id = :customer")
-                .param("id", orderId)
-                .param("customer", customerId)
-                .query((rs, n) -> new Order(rs.getString("order_id"), rs.getString("description"),
-                        rs.getBigDecimal("amount"), rs.getString("status")))
-                .optional();
+    Optional<DemoOrder> find(String customerId, String orderId) {
+        return orders.findByOrderIdAndCustomerId(orderId, customerId);
     }
 }
