@@ -3,23 +3,25 @@ package com.example.voltahome.demo;
 import com.example.voltahome.itsme.ConfirmedOperationExecutor;
 import com.example.voltahome.itsme.ItsmeConfirmationException;
 import com.example.voltahome.itsme.ItsmeConfirmationResult;
-import com.example.voltahome.operation.ConfirmableOperations;
+import com.example.voltahome.operation.ConfirmableOperationDispatcher;
 import com.example.voltahome.operation.OperationException;
 import org.springframework.stereotype.Component;
 
 /**
  * DEMO ONLY. What the application does once itsme has confirmed an operation (README: "Confirmation of an
  * operation", "Several operations, one callback"): reload the operation persisted when the confirmation started
- * and execute it (ConfirmableOperations.execute), then keep the result. Called at the itsme callback, whatever the operation.
+ * and execute it (ConfirmableOperationDispatcher.execute), then keep the result. Called at the itsme callback,
+ * whatever the operation.
  */
 @Component
 class DemoConfirmedOperationExecutor implements ConfirmedOperationExecutor {
 
-    private final ConfirmableOperations operations;
+    private final ConfirmableOperationDispatcher dispatcher;
     private final DemoConfirmedOperations confirmedOperations;
 
-    DemoConfirmedOperationExecutor(ConfirmableOperations operations, DemoConfirmedOperations confirmedOperations) {
-        this.operations = operations;
+    DemoConfirmedOperationExecutor(ConfirmableOperationDispatcher dispatcher,
+                                   DemoConfirmedOperations confirmedOperations) {
+        this.dispatcher = dispatcher;
         this.confirmedOperations = confirmedOperations;
     }
 
@@ -27,7 +29,7 @@ class DemoConfirmedOperationExecutor implements ConfirmedOperationExecutor {
     public String execute(ItsmeConfirmationResult confirmed) {
         String reference;
         try {
-            reference = operations.execute(confirmed);
+            reference = dispatcher.execute(confirmed);
         } catch (OperationException e) {
             throw new ItsmeConfirmationException(e.code(), e);       // nothing was executed
         }

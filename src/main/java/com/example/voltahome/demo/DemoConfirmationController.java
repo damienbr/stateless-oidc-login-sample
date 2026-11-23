@@ -5,7 +5,7 @@ import java.util.Map;
 import com.example.voltahome.itsme.ItsmeConfirmationException;
 import com.example.voltahome.itsme.ItsmeConfirmationService;
 import com.example.voltahome.itsme.ItsmeHandover;
-import com.example.voltahome.operation.ConfirmableOperations;
+import com.example.voltahome.operation.ConfirmableOperationDispatcher;
 import com.example.voltahome.operation.OperationException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.MediaType;
@@ -37,13 +37,13 @@ class DemoConfirmationController {
     record AcceptRequest(String browserCodeChallenge) {}
 
     private final ItsmeConfirmationService confirmation;
-    private final ConfirmableOperations operations;
+    private final ConfirmableOperationDispatcher dispatcher;
     private final DemoOrderConfirmation orders;
 
-    DemoConfirmationController(ItsmeConfirmationService confirmation, ConfirmableOperations operations,
+    DemoConfirmationController(ItsmeConfirmationService confirmation, ConfirmableOperationDispatcher dispatcher,
                                DemoOrderConfirmation orders) {
         this.confirmation = confirmation;
-        this.operations = operations;
+        this.dispatcher = dispatcher;
         this.orders = orders;
     }
 
@@ -78,7 +78,7 @@ class DemoConfirmationController {
         }
         try {
             return ResponseEntity.ok(Map.of("redirect", confirmation.start(request, customerId,
-                    operations.prepare(type, customerId, data), browserCodeChallenge).toString()));
+                    dispatcher.prepare(type, customerId, data), browserCodeChallenge).toString()));
         } catch (ItsmeConfirmationException e) {
             return error(e.code());
         } catch (OperationException e) {

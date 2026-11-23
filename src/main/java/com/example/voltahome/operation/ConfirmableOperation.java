@@ -8,7 +8,7 @@ import com.example.voltahome.itsme.ItsmeFreeText;
  * README: "Several operations, one callback". One kind of operation that a customer confirms with itsme, such as
  * placing an order or accepting an offer.
  * The record may not exist before the confirmation: an order is only created once it is confirmed. So an operation
- * works from its data, everything needed to execute it: ConfirmableOperations persists it as JSON when the
+ * works from its data, everything needed to execute it: ConfirmableOperationDispatcher persists it as JSON when the
  * confirmation starts (schema.sql, pending_operation), reloads it once itsme has confirmed, and gives it back to
  * execute, which only holds the business logic.
  * Both methods take the customer: data that does not apply to that customer must be treated as not found.

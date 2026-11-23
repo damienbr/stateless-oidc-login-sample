@@ -21,14 +21,14 @@ import tools.jackson.databind.ObjectMapper;
  * callback URL does.
  */
 @Component
-public class ConfirmableOperations {
+public class ConfirmableOperationDispatcher {
 
     private final Map<String, ConfirmableOperation<?>> byType = new HashMap<>();
     private final JpaPendingOperationRepository pending;
     private final ObjectMapper json;
 
-    public ConfirmableOperations(List<ConfirmableOperation<?>> operations, JpaPendingOperationRepository pending,
-                                 ObjectMapper json) {
+    public ConfirmableOperationDispatcher(List<ConfirmableOperation<?>> operations,
+                                          JpaPendingOperationRepository pending, ObjectMapper json) {
         this.pending = pending;
         this.json = json;
         for (ConfirmableOperation<?> operation : operations) {

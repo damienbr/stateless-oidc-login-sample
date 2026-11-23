@@ -13,21 +13,21 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * README: "Several operations, one callback". The registry that picks the operation by its stored type. What it
+ * README: "Several operations, one callback". The dispatcher that picks the operation by its stored type. What it
  * persists and reloads is tested with the database, in ItsmeConfirmationFlowTest (nested class OperationData).
  */
-class ConfirmableOperationsTest {
+class ConfirmableOperationDispatcherTest {
 
     @Test
     void duplicateOperationTypeFailsAtStartup() {
-        assertThatThrownBy(() -> operations(new Named("order"), new Named("order")))
+        assertThatThrownBy(() -> dispatcher(new Named("order"), new Named("order")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("order");
     }
 
     @Test
     void unknownOperationTypeIsRefusedAtTheStart() {
-        assertThatThrownBy(() -> operations(new Named("order")).prepare("refund", "C-1001", new Named.Data("O-1")))
+        assertThatThrownBy(() -> dispatcher(new Named("order")).prepare("refund", "C-1001", new Named.Data("O-1")))
                 .isInstanceOfSatisfying(OperationException.class,
                         e -> assertThat(e.code()).isEqualTo("unknown_operation"));
     }
@@ -37,14 +37,15 @@ class ConfirmableOperationsTest {
         ItsmeConfirmationResult confirmed =
                 new ItsmeConfirmationResult("C-1001", "refund", "a-reference", "text", "acr", Instant.EPOCH);
 
-        assertThatThrownBy(() -> operations(new Named("order")).execute(confirmed))
+        assertThatThrownBy(() -> dispatcher(new Named("order")).execute(confirmed))
                 .isInstanceOfSatisfying(OperationException.class,
                         e -> assertThat(e.code()).isEqualTo("unknown_operation"));
     }
 
     /** No repository: these tests stop before anything is persisted or reloaded. */
-    private static ConfirmableOperations operations(Named... operations) {
-        return new ConfirmableOperations(List.<ConfirmableOperation<?>>of(operations), null, new ObjectMapper());
+    private static ConfirmableOperationDispatcher dispatcher(Named... operations) {
+        return new ConfirmableOperationDispatcher(List.<ConfirmableOperation<?>>of(operations), null,
+                new ObjectMapper());
     }
 
     /** An operation that only has a type. */
