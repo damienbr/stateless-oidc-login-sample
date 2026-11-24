@@ -22,8 +22,7 @@ spring:
 # The discovery document is only used to VERIFY these values (ItsmeDiscoveryCheck).
 itsme:
   client-id: ${ITSME_CLIENT_ID:demo-client}
-  client-secret: ${ITSME_CLIENT_SECRET:}                    # required; injected from a vault (README "Client authentication")
-  id-token-signature: RS256                                 # RS256, or HS256 if the itsme registration says so
+  client-secret: ${ITSME_CLIENT_SECRET:}                    # required, at least 32 bytes; injected from a vault (README "Client authentication")
   service-code: ${ITSME_SERVICE_CODE:VOLTAHOME_LOGIN}
   redirect-uri: ${ITSME_REDIRECT_URI:https://portal.voltahome.example/login/oauth2/code/itsme}
   acr: http://itsme.services/v2/claim/acr_advanced

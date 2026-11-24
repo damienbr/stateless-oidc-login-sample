@@ -19,8 +19,8 @@ public final class ItsmeCrypto {
 
     /**
      * The ID token must be a nested JWT: an encrypted envelope (JWE header "cty": "JWT") with a SIGNED token inside.
-     * Encryption alone proves nothing about the origin: anyone holding the client secret can encrypt. Only the
-     * signature inside proves the origin.
+     * Encryption alone must never be enough: the decoder verifies the signature inside, and this check refuses a
+     * token that has none.
      */
     public static void requireNestedSignedJwt(String token) {
         try {
@@ -48,14 +48,15 @@ public final class ItsmeCrypto {
     }
 
     /**
-     * With itsme.id-token-signature=HS256 only: the key that verifies the ID token signature.
+     * README: "Client authentication". The key of every HS256 signature exchanged with itsme: the ID token, signed by
+     * itsme, and the request object of a confirmation, signed by us. The itsme profile is registered with HS256.
      * OIDC Core §10.1: the HMAC key is the UTF-8 bytes of the client secret, used as they are (no derivation).
      * HS256 needs at least 256 bits (RFC 7518 §3.2); a shorter secret is refused at startup, not at the first login.
      */
-    public static SecretKey idTokenSignatureKey(String clientSecret) {
+    public static SecretKey signatureKey(String clientSecret) {
         byte[] secret = clientSecret.getBytes(StandardCharsets.UTF_8);
         if (secret.length < 32) {
-            throw new IllegalStateException("itsme.id-token-signature=HS256 needs a client secret of at least 32 bytes");
+            throw new IllegalStateException("HS256 needs a client secret of at least 32 bytes");
         }
         return new SecretKeySpec(secret, "HmacSHA256");
     }

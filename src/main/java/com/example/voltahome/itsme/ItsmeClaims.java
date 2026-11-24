@@ -4,7 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * The "claims" parameter of the authorization request. README: "Authorization request".
+ * The "claims" parameter of the authorization request. README: "Authorization request". For a confirmation it
+ * travels inside the request object (README: "Request object"), never in the URL.
  * The login sends none: it authenticates, it does not identify, and the customer is found through the itsme
  * "sub" (README: "Authentication, not identification"). A confirmation sends the text to approve and the itsme
  * account expected to approve it, nothing else.

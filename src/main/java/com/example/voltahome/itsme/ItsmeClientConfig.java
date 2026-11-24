@@ -16,7 +16,6 @@ import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.JWEDecryptionKeySelector;
-import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SingleKeyJWSKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.util.DefaultResourceRetriever;
@@ -77,9 +76,7 @@ public class ItsmeClientConfig {
         if (p.clientSecret() == null || p.clientSecret().isBlank()) {
             throw new IllegalStateException("itsme.client-secret is required");
         }
-        if (p.idTokenSignedWithSecret()) {
-            ItsmeCrypto.idTokenSignatureKey(p.clientSecret());   // refuses a secret too short for HS256, now
-        }
+        ItsmeCrypto.signatureKey(p.clientSecret());              // refuses a secret too short for HS256, now
         return ClientRegistration.withRegistrationId(registrationId)
                 .clientId(p.clientId())
                 .clientSecret(p.clientSecret())
@@ -142,7 +139,10 @@ public class ItsmeClientConfig {
         return client;
     }
 
-    /** itsme public keys (signature of ID tokens with RS256), through the proxy, cached by Nimbus. */
+    /**
+     * itsme public keys, through the proxy, cached by Nimbus. Only the encryption key ("use": "enc") is used: it
+     * encrypts the request object of a confirmation (ItsmeRequestObject).
+     */
     @Bean
     JWKSource<SecurityContext> itsmeJwkSource(ItsmeProperties p) throws MalformedURLException {
         DefaultResourceRetriever retriever = new DefaultResourceRetriever(5_000, 5_000, 512 * 1024);
@@ -154,26 +154,19 @@ public class ItsmeClientConfig {
 
     /**
      * README: "ID token validation". Spring's default decoder cannot decrypt JWE tokens. Expected format: a JWE
-     * (dir, A256GCM, key derived from the client secret) containing a JWS signed with RS256 (itsme's key) or, only
-     * with itsme.id-token-signature=HS256, with HS256 (the client secret itself).
-     * Exactly one signature algorithm is accepted, never both: README: "Client authentication".
+     * (dir, A256GCM, key derived from the client secret) containing a JWS signed with HS256 (the client secret
+     * itself). No other signature algorithm is accepted: README: "Client authentication".
      */
     @Bean
-    JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory(ItsmeProperties properties,
-                                                                JWKSource<SecurityContext> itsmeJwkSource) {
+    JwtDecoderFactory<ClientRegistration> idTokenDecoderFactory(ItsmeProperties properties) {
         Map<String, JwtDecoder> cache = new ConcurrentHashMap<>();
         return registration -> cache.computeIfAbsent(registration.getRegistrationId(), id -> {
             DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
             processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(              // 1. decrypt with the shared key
                     JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
                     new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
-            if (properties.idTokenSignedWithSecret()) {
-                processor.setJWSKeySelector(new SingleKeyJWSKeySelector<>(           // 2. verify the HMAC (client secret)
-                        JWSAlgorithm.HS256, ItsmeCrypto.idTokenSignatureKey(properties.clientSecret())));
-            } else {
-                processor.setJWSKeySelector(new JWSVerificationKeySelector<>(        // 2. verify itsme's signature
-                        JWSAlgorithm.RS256, itsmeJwkSource));
-            }
+            processor.setJWSKeySelector(new SingleKeyJWSKeySelector<>(               // 2. verify the HMAC (client secret)
+                    JWSAlgorithm.HS256, ItsmeCrypto.signatureKey(properties.clientSecret())));
             processor.setJWTClaimsSetVerifier((claims, context) -> { });             // validated by Spring below
 
             NimbusJwtDecoder nimbus = new NimbusJwtDecoder(processor);

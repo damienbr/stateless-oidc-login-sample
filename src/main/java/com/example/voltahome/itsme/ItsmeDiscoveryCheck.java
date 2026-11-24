@@ -70,8 +70,14 @@ public class ItsmeDiscoveryCheck {
         requireSupported(mismatches, d, "token_endpoint_auth_methods_supported", "client_secret_post");
         requireSupported(mismatches, d, "id_token_encryption_alg_values_supported", "dir");
         requireSupported(mismatches, d, "id_token_encryption_enc_values_supported", "A256GCM");
-        requireSupported(mismatches, d, "id_token_signing_alg_values_supported",
-                properties.idTokenSignedWithSecret() ? "HS256" : "RS256");
+        requireSupported(mismatches, d, "id_token_signing_alg_values_supported", "HS256");
+        // The request object of a confirmation (README: "Request object")
+        requireSupported(mismatches, d, "request_object_signing_alg_values_supported", "HS256");
+        requireSupported(mismatches, d, "request_object_encryption_alg_values_supported", "RSA-OAEP-256");
+        requireSupported(mismatches, d, "request_object_encryption_enc_values_supported", "A256GCM");
+        if (Boolean.FALSE.equals(d.get("request_parameter_supported"))) {
+            mismatches.add("request_parameter_supported is false");
+        }
 
         if (mismatches.isEmpty()) {
             log.info("itsme discovery check OK");

@@ -51,7 +51,11 @@ public final class ItsmeWireMock {
                   "token_endpoint_auth_methods_supported": ["client_secret_post"],
                   "id_token_encryption_alg_values_supported": ["dir"],
                   "id_token_encryption_enc_values_supported": ["A256GCM"],
-                  "id_token_signing_alg_values_supported": ["RS256", "HS256"]
+                  "id_token_signing_alg_values_supported": ["RS256", "HS256"],
+                  "request_parameter_supported": true,
+                  "request_object_signing_alg_values_supported": ["RS256", "HS256"],
+                  "request_object_encryption_alg_values_supported": ["RSA-OAEP-256"],
+                  "request_object_encryption_enc_values_supported": ["A256GCM"]
                 }
                 """.formatted(wm.baseUrl() + "/v2");
         wm.stubFor(get("/v2/.well-known/openid-configuration").willReturn(okJson(body)));
@@ -72,7 +76,7 @@ public final class ItsmeWireMock {
                         """.formatted(idToken))));
     }
 
-    /** The ID token is encrypted with a key derived from the client secret. */
+    /** The ID token is signed with the client secret (HS256) and encrypted with a key derived from it. */
     public IdTokenBuilder idToken(String issuer, String nonce, String clientSecret) {
         return new IdTokenBuilder(issuer, nonce, clientSecret);
     }
@@ -86,12 +90,12 @@ public final class ItsmeWireMock {
         private Instant issuedAt = Instant.now();
         private Duration validity = Duration.ofMinutes(5);
         private String secret;
-        private ItsmeStubCrypto signer = crypto;
         private String hs256Secret;
 
         private IdTokenBuilder(String issuer, String nonce, String clientSecret) {
             this.issuer = issuer;
             this.secret = clientSecret;
+            this.hs256Secret = clientSecret;
             claims.put("sub", "stub-sub-alex");
             claims.put("nonce", nonce);
             claims.put("acr", ACR_ADVANCED);
@@ -105,12 +109,10 @@ public final class ItsmeWireMock {
         public IdTokenBuilder validity(Duration value) { this.validity = value; return this; }
         /** Encrypt with a key derived from another secret than the application's. */
         public IdTokenBuilder encryptedWithSecret(String other) { this.secret = other; return this; }
-        /** Sign with keys that are not the ones itsme publishes. */
-        public IdTokenBuilder signedBy(ItsmeStubCrypto other) { this.signer = other; this.hs256Secret = null; return this; }
-        /** Sign with HS256 and this secret instead of itsme's RSA key. */
+        /** Sign with HS256 and another secret than the application's. */
         public IdTokenBuilder signedWithSecret(String value) { this.hs256Secret = value; return this; }
-        /** Sign with itsme's RSA key (RS256), the default. */
-        public IdTokenBuilder signedWithItsmeKey() { this.signer = crypto; this.hs256Secret = null; return this; }
+        /** Sign with itsme's RSA key (RS256) instead of the client secret. */
+        public IdTokenBuilder signedWithItsmeRsaKey() { this.hs256Secret = null; return this; }
 
         /** null removes the claim. */
         public IdTokenBuilder claim(String name, Object value) {
@@ -122,11 +124,11 @@ public final class ItsmeWireMock {
             return this;
         }
 
-        /** Expected itsme format: signed by itsme, then encrypted for the application. */
+        /** Expected itsme format: signed by itsme with the client secret, then encrypted for the application. */
         public String build() {
             return hs256Secret != null
                     ? crypto.hs256SignedAndEncryptedWithSecret(claimsSet(), hs256Secret, secret)
-                    : signer.signedAndEncryptedWithSecret(claimsSet(), secret);
+                    : crypto.rs256SignedAndEncryptedWithSecret(claimsSet(), secret);
         }
 
         /** Negative case: encrypted for the application but NOT signed. Must be rejected. */

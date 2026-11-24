@@ -115,6 +115,7 @@ You send what the customer chose, never a text, a description or an amount: the 
 | `200 {"redirect": "https://..."}` | `location.assign(redirect)`: the customer goes to itsme. The verifier is already in `sessionStorage` |
 | `400 {"error": "operation_not_found"}` | The product does not exist, or the offer does not exist, is another customer's, or is no longer open |
 | `400 {"error": "invalid_request"}` | No valid `browserCodeChallenge` in the body |
+| `400 {"error": "itsme_unavailable"}` | The backend could not prepare the request for itsme: try again later |
 | `400 {"error": "<code>"}` | Show the message for that code |
 
 ### 2. Back from itsme

@@ -3,6 +3,7 @@ package com.example.voltahome.itsme;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -16,10 +17,12 @@ import java.util.Map;
 import java.util.function.UnaryOperator;
 
 import com.example.voltahome.fraud.FraudSignal;
+import com.example.voltahome.local.ItsmeStubCrypto;
 import com.example.voltahome.operation.JpaPendingOperationRepository;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
+import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -69,22 +72,53 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     }
 
     @Test
-    void confirmationRequestCarriesTheTextToApproveInTheUrl() throws Exception {
+    void confirmationRequestCarriesTheTextToApproveInTheRequestObject() throws Exception {
         StartedConfirmation started = startConfirmation(alex);
         MultiValueMap<String, String> query = query(started);
+        JWTClaimsSet requestObject = requestObject(started);
 
         assertThat(started.location()).startsWith(itsme.baseUrl() + "/v2/authorization?");
-        assertThat(decode(query.getFirst("scope")).split(" ")).containsExactlyInAnyOrder("openid", "service:VOLTAHOME_CONFIRM");
-        assertThat(decode(query.getFirst("redirect_uri"))).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
-        assertThat(decode(query.getFirst("acr_values"))).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
-        assertThat(query.getFirst("code_challenge_method")).isEqualTo("S256");
-        assertThat(query.getFirst("code_challenge")).isNotBlank();
-        assertThat(decode(query.getFirst("claims"))).contains("Order: Smart thermostat", "EUR 149.00");
+        assertThat(requestObject.getIssuer()).isEqualTo(CLIENT_ID);
+        assertThat(requestObject.getAudience()).containsExactly(itsme.baseUrl() + "/v2");
+        assertThat(requestObject.getStringClaim("response_type")).isEqualTo("code");
+        assertThat(requestObject.getStringClaim("client_id")).isEqualTo(CLIENT_ID);
+        assertThat(requestObject.getStringClaim("scope").split(" "))
+                .containsExactlyInAnyOrder("openid", "service:VOLTAHOME_CONFIRM");
+        assertThat(requestObject.getStringClaim("redirect_uri")).isEqualTo("http://localhost" + CONFIRMATION_CALLBACK);
+        assertThat(requestObject.getStringClaim("acr_values")).isEqualTo(ItsmeWireMock.ACR_ADVANCED);
+        assertThat(requestObject.getStringClaim("code_challenge_method")).isEqualTo("S256");
+        assertThat(requestObject.getStringClaim("code_challenge")).isNotBlank()
+                .isEqualTo(query.getFirst("code_challenge"));
+        assertThat(requestObject.getStringClaim("state")).isEqualTo(started.state());
+        assertThat(requestObject.getStringClaim("nonce")).isEqualTo(started.nonce());
+        assertThat(requestedClaims(started).toString()).contains("Order: Smart thermostat", "EUR 149.00");
+    }
+
+    @Test
+    void requestObjectIsSignedWithTheClientSecretAndEncryptedForItsme() throws Exception {
+        String request = query(startConfirmation(alex)).getFirst("request");
+
+        assertThat(stub.crypto().requestObjectHeaders(request)).isEqualTo(new ItsmeStubCrypto.RequestObjectHeaders(
+                "RSA-OAEP-256", "A256GCM", "itsme-stub-enc", "JWT", "HS256"));
+        // itsme verifies the signature with the secret of the client: another secret does not verify it
+        assertThatThrownBy(() -> stub.crypto().openRequestObject(request, "another-client-secret-0123456789abcdef"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void textToApproveLevelAndLinkedAccountAreNotInTheUrl() throws Exception {
+        MultiValueMap<String, String> query = query(startConfirmation(alex));
+
+        // In the request object only: neither readable nor editable in the browser
+        assertThat(query).doesNotContainKeys("claims", "acr_values");
+        // What stays in the URL repeats the request object: OAuth 2.0 parameters, state, nonce and PKCE
+        assertThat(query.keySet()).containsExactlyInAnyOrder("response_type", "client_id", "scope", "redirect_uri",
+                "state", "nonce", "code_challenge", "code_challenge_method", "request");
     }
 
     @Test
     void confirmationRequestAsksForTheWysiwysTemplateOnlyNoIdentityClaim() throws Exception {
-        JsonNode claims = json.readTree(decode(query(startConfirmation(alex)).getFirst("claims")));
+        JsonNode claims = requestedClaims(startConfirmation(alex));
         JsonNode idTokenClaims = claims.get("id_token");
 
         assertThat(claims.propertyNames()).containsExactlyInAnyOrder("id_token", "userinfo");
@@ -102,7 +136,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
     @Test
     void confirmationRequestNamesTheItsmeAccountLinkedToTheCustomer() throws Exception {
         // itsme skips its identification page for this account; it only reads the sub under "userinfo"
-        JsonNode claims = json.readTree(decode(query(startConfirmation(alex)).getFirst("claims")));
+        JsonNode claims = requestedClaims(startConfirmation(alex));
 
         assertThat(json.convertValue(claims.get("userinfo"), Map.class))
                 .isEqualTo(Map.of("sub", Map.of("value", "stub-sub-alex")));
@@ -264,7 +298,7 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
             StartedConfirmation started = startConfirmation(alex, START, request);
 
-            assertThat(decode(query(started).getFirst("claims"))).contains("EUR 149.00").doesNotContain("Free");
+            assertThat(requestedClaims(started).toString()).contains("EUR 149.00").doesNotContain("Free");
             assertThat(json.readTree(storedData()).get("amount").decimalValue()).isEqualByComparingTo("149.00");
         }
 
@@ -748,6 +782,16 @@ class ItsmeConfirmationFlowTest extends ItsmeIntegrationTest {
 
     private static MultiValueMap<String, String> query(StartedConfirmation started) {
         return UriComponentsBuilder.fromUriString(started.location()).build().getQueryParams();
+    }
+
+    /** The request object as itsme opens it: decrypted with itsme's key, signature verified with our client secret. */
+    private static JWTClaimsSet requestObject(StartedConfirmation started) {
+        return stub.crypto().openRequestObject(query(started).getFirst("request"), CLIENT_SECRET);
+    }
+
+    /** The "claims" parameter of the request object. */
+    private JsonNode requestedClaims(StartedConfirmation started) throws Exception {
+        return json.valueToTree(requestObject(started).getJSONObjectClaim("claims"));
     }
 
     /** A complete login of the SPA: the token it keeps after the hand-over. */

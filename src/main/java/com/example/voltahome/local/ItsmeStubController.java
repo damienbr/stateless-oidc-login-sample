@@ -33,8 +33,9 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * LOCAL DEVELOPMENT ONLY ("local" profile). An itsme stub served by the application itself, so the complete
  * login can be clicked through in a browser without itsme credentials, Docker or any external service.
- * It checks what itsme would check: the registered redirect URI, PKCE, a single-use code, the WYSIWYS template of a
- * confirmation, and the client secret at the token endpoint. It is not itsme and does not look like it.
+ * It checks what itsme would check: the registered redirect URI, PKCE, a single-use code, the request object of a
+ * confirmation (signed with the client secret, encrypted for itsme) and its WYSIWYS template, and the client secret
+ * at the token endpoint. It is not itsme and does not look like it.
  */
 @Controller
 @Profile("local")
@@ -52,7 +53,7 @@ class ItsmeStubController {
     private final Map<String, PendingCode> codes = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
 
-    /** The parameters itsme will act on, as read from the URL. */
+    /** The parameters itsme will act on, as read from the URL (login) or from the request object (confirmation). */
     private record Authorization(String redirectUri, String state, String nonce, String codeChallenge,
                                  String acrValues, Instant expiresAt) {}
 
@@ -78,6 +79,10 @@ class ItsmeStubController {
         d.put("id_token_encryption_alg_values_supported", List.of("dir"));
         d.put("id_token_encryption_enc_values_supported", List.of("A256GCM"));
         d.put("id_token_signing_alg_values_supported", List.of("RS256", "HS256"));
+        d.put("request_parameter_supported", true);
+        d.put("request_object_signing_alg_values_supported", List.of("RS256", "HS256"));
+        d.put("request_object_encryption_alg_values_supported", List.of("RSA-OAEP-256"));
+        d.put("request_object_encryption_enc_values_supported", List.of("A256GCM"));
         return d;
     }
 
@@ -95,10 +100,25 @@ class ItsmeStubController {
         if (!properties.clientId().equals(query.get("client_id")) || !"code".equals(query.get("response_type"))) {
             return badRequest("Unknown client_id, or response_type is not 'code'.");
         }
-        Map<String, String> params = query;
         // Registered redirect URIs: the login's, and the confirmation's
-        boolean confirmation = String.valueOf(params.get("scope"))
+        boolean confirmation = String.valueOf(query.get("scope"))
                 .contains("service:" + properties.confirmation().serviceCode());
+        Map<String, String> params = query;
+        if (confirmation) {
+            // itsme Confirmation: a request object is required, signed with the client secret and encrypted for itsme.
+            // Its parameters are the ones itsme acts on; those repeated in the URL must be the same.
+            try {
+                params = requestObjectParameters(query.get("request"));
+            } catch (IllegalArgumentException e) {
+                return badRequest("Confirmation: a request object signed with the client secret (HS256) and encrypted "
+                        + "with the itsme stub's public key is required (invalid_request_object).");
+            }
+            for (String repeated : List.of("response_type", "client_id", "scope", "redirect_uri", "state")) {
+                if (!String.valueOf(query.get(repeated)).equals(params.get(repeated))) {
+                    return badRequest("The parameters of the URL do not match the request object (invalid_request).");
+                }
+            }
+        }
         String registeredRedirectUri = confirmation ? properties.confirmation().redirectUri() : properties.redirectUri();
         if (!properties.clientId().equals(params.get("client_id"))
                 || !registeredRedirectUri.equals(params.get("redirect_uri"))
@@ -111,7 +131,8 @@ class ItsmeStubController {
             // itsme Confirmation: a WYSIWYS template is required
             approvalText = freeText(params.get("claims"));
             if (approvalText == null) {
-                return badRequest("Confirmation: the free_text WYSIWYS template is required in the claims parameter.");
+                return badRequest("Confirmation: the free_text WYSIWYS template is required in the claims of the "
+                        + "request object.");
             }
         }
         Authorization authorization = new Authorization(params.get("redirect_uri"), params.get("state"),
@@ -179,9 +200,8 @@ class ItsmeStubController {
                 .claim("acr", advanced ? ACR_ADVANCED : ACR_BASIC)
                 .build();
         try {
-            String idToken = properties.idTokenSignedWithSecret()
-                    ? crypto.hs256SignedAndEncryptedWithSecret(claims, properties.clientSecret(), properties.clientSecret())
-                    : crypto.signedAndEncryptedWithSecret(claims, properties.clientSecret());
+            String idToken = crypto.hs256SignedAndEncryptedWithSecret(claims, properties.clientSecret(),
+                    properties.clientSecret());
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("access_token", "stub-access-token-" + randomValue());
             body.put("token_type", "Bearer");
@@ -202,7 +222,9 @@ class ItsmeStubController {
             html.append("<h2>Operation to approve</h2>")
                     .append("<p>The itsme app would show this text (free_text template; tags b, i, u, br):</p>")
                     .append("<pre class='approval'>").append(esc(approvalText)).append("</pre>")
-                    .append("<p class='note'>Read from the <code>claims</code> parameter of the URL. The ")
+                    .append("<p class='note'>Read from the <code>claims</code> of the request object (the ")
+                    .append("<code>request</code> parameter: signed with the client secret, encrypted for itsme). ")
+                    .append("It cannot be read or changed in the address bar. The ")
                     .append("application executes the operation it stored when the confirmation started.</p>")
                     .append("<p class='note'>The request names the itsme account linked to the customer ")
                     .append("(<code>userinfo.sub</code> in the claims): itsme would skip its identification page. ")
@@ -211,8 +233,10 @@ class ItsmeStubController {
                     .append("Only the itsme account linked to the logged-in customer is accepted.</p>");
         }
         html.append("<h2>What the application asked for</h2>")
-                .append("<p>Read from the <strong>URL</strong>. The ID token check is what protects the level: ")
-                .append("try removing <code>acr_values</code> from the address and reloading.</p>")
+                .append(approvalText != null
+                        ? "<p>Read from the <strong>request object</strong>, which only itsme can decrypt.</p>"
+                        : "<p>Read from the <strong>URL</strong>. The ID token check is what protects the level: "
+                                + "try removing <code>acr_values</code> from the address and reloading.</p>")
                 .append("<table>")
                 .append(row("acr_values", params.getOrDefault("acr_values", "(none: basic level)")))
                 .append(row("claims", params.get("claims")))
@@ -227,6 +251,20 @@ class ItsmeStubController {
         html.append("<form method='post' action='/itsme-stub/v2/authorization/cancel'>").append(hidden("id", id))
                 .append("<button type='submit' class='cancel'>Cancel (the user refuses)</button></form>");
         return html.toString();
+    }
+
+    /**
+     * The parameters of a request object, as strings ("claims" as JSON text). Opened as itsme would: decrypted with
+     * the stub's private key, signature verified with the client secret.
+     */
+    private Map<String, String> requestObjectParameters(String requestObject) {
+        if (requestObject == null) {
+            throw new IllegalArgumentException("No request object");
+        }
+        Map<String, String> parameters = new LinkedHashMap<>();
+        crypto.openRequestObject(requestObject, properties.clientSecret()).getClaims().forEach((name, value) ->
+                parameters.put(name, value instanceof Map<?, ?> object ? json.writeValueAsString(object) : str(value)));
+        return parameters;
     }
 
     /** The text of the free_text template, if the claims (JSON) request one (essential, under "id_token"). */

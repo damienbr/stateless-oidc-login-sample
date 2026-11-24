@@ -202,7 +202,7 @@ Spring asks this factory "give me the decoder for the ID tokens of this provider
 
 **`JwtDecoder`, `NimbusJwtDecoder`** (Spring) — *file: `itsme/ItsmeClientConfig.java`*
 
-A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (dir / A256GCM, with the key derived from the client secret), then verify itsme's signature with itsme's public keys (RS256). For a client registered at itsme with HS256 (`itsme.id-token-signature: HS256`), step two checks an HMAC made with the client secret instead, through Nimbus `SingleKeyJWSKeySelector`; only one of the two algorithms is ever accepted. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
+A `JwtDecoder` turns the token string into a checked `Jwt` object, or throws an exception. `NimbusJwtDecoder` is Spring's implementation on top of the Nimbus library. The sample gives it a Nimbus processor configured with explicit algorithms: first decrypt (dir / A256GCM, with the key derived from the client secret), then verify the signature, an HMAC made with the client secret (HS256), through Nimbus `SingleKeyJWSKeySelector`; no other algorithm is accepted. The factory wraps this decoder in a small lambda that first calls `ItsmeCrypto.requireNestedSignedJwt`, which refuses a token that is encrypted but not signed inside (design rule 2).
 
 **`BadJwtException`** (Spring) — *file: `itsme/ItsmeCrypto.java`*
 
@@ -308,7 +308,7 @@ Remember that everything in this section is a demo stand-in. A real application 
 
 ## 12. Confirming an operation from the portal
 
-A logged-in customer clicks "Order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, `acr_values`, token request and ID token checks. But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the login's hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
+A logged-in customer clicks "Order" or "Accept offer" in the SPA and approves one operation in the itsme app (README: "Confirmation of an operation"). The protocol is the login's: same itsme endpoints, `state`, `nonce`, PKCE, `acr_values`, token request and ID token checks; only the request is packed in a request object (README: "Request object"). But a confirmation logs nobody in, so `oauth2Login()` is not used for it. Its filters would turn the answer into a login and call the login's hand-over. `ItsmeConfirmationService` calls the same Spring classes directly instead.
 
 **`ItsmeConfirmationService`** (ours) — *file: `itsme/ItsmeConfirmationService.java`*
 
@@ -320,7 +320,7 @@ A second registration with the same client id, the confirmation's itsme service 
 
 **`DefaultOAuth2AuthorizationRequestResolver`** and **`OAuth2AuthorizationRequestCustomizers.withPkce()`** (Spring) — *file: `itsme/ItsmeConfirmationService.java`*
 
-The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), given an `InMemoryClientRegistrationRepository` that holds only the confirmation registration. It generates `state`, `nonce` and PKCE, and a customizer adds `acr_values`. `start` then adds the `claims` parameter, with the `free_text` template, the text to approve and the `sub` linked to the customer: `OAuth2AuthorizationRequest.from(...)` copies the request without its URI, so `build()` writes a new URI that includes `claims`.
+The same resolver as in [section 5](#5-step-one-sending-the-customer-to-itsme), given an `InMemoryClientRegistrationRepository` that holds only the confirmation registration. It generates `state`, `nonce` and PKCE. `start` then adds the `request` parameter: the request object built by `ItsmeRequestObject` (ours, Nimbus only), which holds the same parameters plus `acr_values` and `claims` (the `free_text` template, the text to approve and the `sub` linked to the customer), signed with the client secret and encrypted with itsme's public key. `OAuth2AuthorizationRequest.from(...)` copies the request without its URI, so `build()` writes a new URI that includes `request`.
 
 **`JpaConfirmationRequestRepository`** (ours) — *file: `itsme/JpaConfirmationRequestRepository.java`*
 

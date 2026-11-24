@@ -2,7 +2,7 @@
 
 A runnable reference implementation of a customer login with **itsme** (OpenID Connect, itsme API **v2**) in a **stateless Spring Boot 4 backend**, for a fictitious energy supplier, *VoltaHome*.
 
-- **Client secret** authentication (`client_secret_post`): the authorization parameters travel in the URL, and ID tokens are signed by itsme and encrypted with a key derived from the secret. See [Client authentication](#client-authentication).
+- **Client secret** authentication (`client_secret_post`): the login's authorization parameters travel in the URL, a confirmation's in a request object signed with the secret and encrypted for itsme, and ID tokens are signed by itsme with the secret (HS256) and encrypted with a key derived from it. See [Client authentication](#client-authentication).
 - **Authentication, not identification**: no personal data is requested from itsme. The customer is found through the itsme `sub` (a pseudonym) already linked to their account; an itsme account that is not linked is refused. See [Authentication, not identification](#authentication-not-identification).
 - **Confirmation of an operation**: a logged-in customer approves one operation in the itsme app (place an order, accept an offer), from a button in the protected portal. The data of the operation is persisted as JSON in an intermediate table when the confirmation starts, and reloaded once itsme has confirmed: an order does not exist before it is confirmed. The approval counts only if it comes from the itsme account linked to that customer; the operation is then executed at once, at the itsme callback. See [Confirmation of an operation](#confirmation-of-an-operation).
 - **A single page application, no cookie**: the itsme callbacks are on the backend. After a login, and after a confirmation, the backend sends the browser back to the SPA with a one-time code; the SPA redeems it with an AJAX call and gets the application's token as JSON (a new one after a confirmation). See [Hand-over](#hand-over) and the guide for the SPA developer, [docs/spa-handover.md](docs/spa-handover.md).
@@ -45,7 +45,7 @@ New to the project? Follow this order; it takes about an hour. For the reasoning
 | JWS / JWE | A signed JWT (proves who wrote it) / an encrypted JWT (hides the content). |
 | Nested JWT | A JWS inside a JWE: signed, then encrypted. itsme ID tokens must be nested. |
 | Client secret | The secret itsme issues to our client. It authenticates us at the token endpoint and is the source of the ID token decryption key. |
-| JWKS | A JSON set of public keys. itsme publishes its own; we use them to verify the RS256 signature of ID tokens. |
+| JWKS | A JSON set of public keys. itsme publishes its own; we use its encryption key to encrypt the request object of a confirmation. |
 | Discovery document | itsme's published configuration (`.well-known/openid-configuration`). Here it is only compared with our configuration, never used as a source. |
 | Service code | The itsme service our client uses, sent as the `service:<code>` scope. The login and the confirmation use two different services (`service-code`, `confirmation.service-code`). |
 | Hand-over | How the end of an itsme flow reaches the SPA: a one-time code in the URL fragment, redeemed by the SPA with its browser code verifier; `LoginHandover` (after a login) or `ConfirmationHandover` (after a confirmation) then issues the application's own token. |
@@ -92,7 +92,7 @@ Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nim
 2. **Check the JDK**: *File → Project Structure → Project → SDK* = 17 or later.
 3. **Run the tests**: select the run configuration **All tests** (top-right of the window) and click *Run*, or right-click `src/test/java` → *Run 'All Tests'*.
 
-`ItsmeLoginFlowTest` covers the protocol (authorization request, client secret, ID token, state, hand-over). `ClientSecretHs256LoginFlowTest` covers what differs when itsme signs ID tokens with HS256. From a terminal, `./mvnw verify` (`mvnw.cmd verify` on Windows) does the same; the Maven wrapper downloads Maven 3.9.11 on first use and checks its SHA-256.
+`ItsmeLoginFlowTest` covers the protocol (authorization request, client secret, ID token, state, hand-over). From a terminal, `./mvnw verify` (`mvnw.cmd verify` on Windows) does the same; the Maven wrapper downloads Maven 3.9.11 on first use and checks its SHA-256.
 
 ---
 
@@ -123,10 +123,11 @@ Stack: Spring Boot 4.0.7 (Spring Framework 7, Spring Security 7, Jackson 3), Nim
 
 **Things to try**
 - Remove `acr_values` from the URL of the itsme stub page and reload, then log in as Alex. itsme falls back to the basic level, and the application rejects the ID token: the `acr` check on the response is the protection.
+- Start an order and look at the address of the itsme stub page: neither the text to approve nor `acr_values` is in it, only a `request` parameter. Change one character of it and reload: the stub refuses the request object, as itsme would.
 
-**How the itsme stub works** (`local` package): served by the application under `/itsme-stub/v2`, with its own signing key (`ItsmeStubCrypto`, shared with the tests). It checks the redirect URI, PKCE, a single-use code valid for 3 minutes and the client secret, and returns ID tokens signed with the configured algorithm and encrypted with the key derived from the secret. A request with the confirmation service scope is a confirmation: the stub then requires the `free_text` template in the `claims` parameter, checks the confirmation redirect URI, and shows the text to approve. `ItsmeStubGuard` stops the application if the `local` profile is used with non-localhost endpoints.
+**How the itsme stub works** (`local` package): served by the application under `/itsme-stub/v2`, with its own signing and encryption keys (`ItsmeStubCrypto`, shared with the tests). It checks the redirect URI, PKCE, a single-use code valid for 3 minutes and the client secret, and returns ID tokens signed with HS256 and the client secret, and encrypted with the key derived from it. A request with the confirmation service scope is a confirmation: the stub then requires a request object signed with the client secret and encrypted with its public key, compares it with the parameters repeated in the URL, requires the `free_text` template in its `claims`, checks the confirmation redirect URI, and shows the text to approve. `ItsmeStubGuard` stops the application if the `local` profile is used with non-localhost endpoints.
 
-Every class of the stub is in the `local` package and starts with `ItsmeStub`. All of them except `ItsmeStubCrypto` exist only with the `local` profile. `ItsmeStubCrypto` is not a Spring bean: it is also the itsme side of the WireMock tests, and a deliberately independent implementation of the itsme cryptography, so that the tests do not check our code against itself. That is why it is public and lives in `src/main`. One setting outside the package also serves local development: `server.max-http-request-header-size` in `application-local.yml`, because the confirmation text reaches the stub, served by the same Tomcat, in the URL.
+Every class of the stub is in the `local` package and starts with `ItsmeStub`. All of them except `ItsmeStubCrypto` exist only with the `local` profile. `ItsmeStubCrypto` is not a Spring bean: it is also the itsme side of the WireMock tests, and a deliberately independent implementation of the itsme cryptography, so that the tests do not check our code against itself. That is why it is public and lives in `src/main`. One setting outside the package also serves local development: `server.max-http-request-header-size` in `application-local.yml`, because the request object of a confirmation, which holds the text, reaches the stub, served by the same Tomcat, in the URL.
 
 ---
 
@@ -151,8 +152,8 @@ The containers use `mvn` rather than `./mvnw`. The wrapper's pinned checksum is 
 |---|---|
 | Protocol | OpenID Connect Authorization Code flow, itsme API v2 |
 | Client authentication | Client secret (`client_secret_post`) — see [Client authentication](#client-authentication) |
-| Authorization request | PKCE (S256); `acr_values` and, for a confirmation, `claims` in the URL |
-| ID token | Signed (RS256) by itsme, encrypted with a key derived from the secret; HS256 accepted only for a registration that cannot use RS256 |
+| Authorization request | PKCE (S256); login: `acr_values` in the URL; confirmation: a request object (signed with the secret, encrypted for itsme) with `acr_values` and `claims` |
+| ID token | Signed by itsme with HS256 and the client secret, encrypted with a key derived from the secret |
 | Scope | Authentication only, no identification |
 | Customer mapping | itsme `sub`, already linked to the customer; an unknown `sub` is refused |
 | Data requested from itsme | Nothing: no claim for the login; a confirmation sends the text to approve and the linked `sub` |
@@ -211,22 +212,21 @@ The application authenticates to itsme with a client secret.
 |---|---|
 | What itsme gives you | A shared secret |
 | Token request | `client_id` + `client_secret` in the body (`client_secret_post`) |
-| Authorization parameters | In the URL: visible and editable in the browser |
+| Authorization parameters | Login: in the URL, visible and editable in the browser. Confirmation: in a request object, signed with HS256 and the secret, encrypted with itsme's public key (see [Request object](#request-object)) |
 | ID token encryption | dir + A256GCM, with a key derived from the secret (OIDC Core §10.2, *to be confirmed in E2E*) |
-| ID token signature | RS256, itsme's key (default); or HS256, the client secret itself (OIDC Core §10.1), if the itsme registration says so |
+| ID token signature | HS256, the client secret itself (OIDC Core §10.1): the itsme profile is registered with HS256 |
 | Protection of `acr_values` | The `acr` check on the ID token |
-| If the secret leaks | Intercepted codes can be exchanged, captured ID tokens decrypted |
+| If the secret leaks | Intercepted codes can be exchanged, captured ID tokens decrypted, request objects signed in our name |
 | Infrastructure | Secret in a vault, rotation arranged with itsme (restart needed) |
-| Code | `ItsmeClientConfig` (registration, decoder), `ItsmeCrypto.idTokenDecryptionKey`, `ItsmeCrypto.idTokenSignatureKey` (HS256) |
+| Code | `ItsmeClientConfig` (registration, decoder), `ItsmeCrypto.idTokenDecryptionKey`, `ItsmeCrypto.signatureKey` (HS256: ID token and request object), `ItsmeRequestObject` (confirmation) |
 
-The ID token must be signed inside the encryption (`requireNestedSignedJwt`): anyone holding the secret can encrypt, so encryption alone proves nothing about the origin. Startup fails without `itsme.client-secret`.
+The ID token must be signed inside the encryption (`requireNestedSignedJwt`): an encrypted token with no signature inside is refused. Startup fails without `itsme.client-secret`, and with a secret shorter than 32 bytes: HS256 needs a 256-bit key (RFC 7518 §3.2). The application has no key pair of its own and publishes no JWKS.
 
-**HS256 signature.** At registration, itsme lets a client secret client choose how the ID token is signed: RS256 with itsme's key, or HS256 with the client secret. Choose RS256 whenever you can. If the registration is HS256 and cannot be changed, set `itsme.id-token-signature: HS256`:
+**HS256 signature.** The itsme portal has one signature setting per profile, RS256 or HS256, and it applies to everything signed. The sample is written for a profile set to **HS256**: itsme signs the ID token with the client secret, and we sign the request object of a confirmation with it (see [Request object](#request-object)). A profile set to RS256 is not supported: its ID tokens are refused.
 
 - the signature is checked with the UTF-8 bytes of the client secret, used as they are (OIDC Core §10.1; no hash, unlike the decryption key), through Nimbus `SingleKeyJWSKeySelector`;
-- exactly one algorithm is accepted, the configured one: with `HS256`, an RS256 token is refused, and with `RS256` (default), an HS256 token is refused. Accepting both would let a token pass with the wrong kind of key;
-- startup fails if `HS256` is set with a client secret shorter than 32 bytes (256 bits, RFC 7518 §3.2);
-- the cost: anyone who holds the client secret can now make a valid ID token, not only itsme. What still proves the origin is that the token comes straight from itsme's token endpoint over TLS, in exchange for a single-use code bound to PKCE (OIDC Core §3.1.3.7 accepts TLS as the proof of origin in this case). A leaked secret becomes worse than with RS256, so keep it in the vault and rotate it as soon as a leak is suspected.
+- exactly one algorithm is accepted, HS256: a token signed with RS256 and itsme's key is refused;
+- the cost: anyone who holds the client secret can make a valid ID token, not only itsme. What proves the origin is that the token comes straight from itsme's token endpoint over TLS, in exchange for a single-use code bound to PKCE (OIDC Core §3.1.3.7 accepts TLS as the proof of origin in this case). Keep the secret in the vault and rotate it as soon as a leak is suspected.
 
 ---
 
@@ -242,7 +242,8 @@ src/main/java/com/example/voltahome
 │   ├── ItsmeClientConfig.java               client registrations (login, confirmation), token client, ID token decoder
 │   ├── ItsmeAuthorizationRequestResolver    PKCE + acr_values
 │   ├── ItsmeClaims.java                     claims: none for the login; the free_text template and the linked sub for a confirmation
-│   ├── ItsmeCrypto.java                     nested signed JWT check
+│   ├── ItsmeRequestObject.java              request object of a confirmation: signed with the client secret, encrypted for itsme
+│   ├── ItsmeCrypto.java                     nested signed JWT check, keys made from the client secret
 │   ├── AcrValidator.java                    authentication level check
 │   ├── ItsmeOidcUserService.java            customer by sub, principal without itsme claims
 │   ├── ItsmeLinkRepository.java             itsme sub → customer (read only; entity ItsmeLink)
@@ -301,8 +302,7 @@ src/test/java/com/example/voltahome
 ├── support/MutableClock.java                test clock, to test expiry without waiting
 ├── support/TestClockConfig.java             makes MutableClock the application clock in tests
 ├── itsme/ItsmeLoginFlowTest.java            protocol scenarios and hand-over to the SPA
-├── itsme/ClientSecretHs256LoginFlowTest.java  an HS256 ID token signature
-├── itsme/ItsmeClientConfigTest.java         configurations refused at startup (no secret, HS256 with a short secret)
+├── itsme/ItsmeClientConfigTest.java         configurations refused at startup (no secret, a secret too short for HS256)
 ├── itsme/ItsmeCryptoTest.java               nested signed JWT check
 ├── itsme/ItsmeConfirmationFlowTest.java     confirmation scenarios: the data, the right person, the ID token, the hand-over, the state
 ├── itsme/ItsmeFreeTextTest.java             the text shown in the itsme app
@@ -352,7 +352,6 @@ sequenceDiagram
 |---|---|
 | `client-id`, `service-code` | Issued by itsme at onboarding |
 | `client-secret` | Required; injected from a vault |
-| `id-token-signature` | `RS256` (default) or `HS256`, as registered at itsme; see [Client authentication](#client-authentication) |
 | `redirect-uri` | Absolute URL, identical to the value registered at itsme |
 | `acr` | `http://itsme.services/v2/claim/acr_advanced` (itsme code required) |
 | `endpoints.issuer` | Copy the exact value from the discovery document of each environment |
@@ -375,6 +374,8 @@ Network flows: outbound only, from the backend to one itsme host per environment
 
 `ItsmeAuthorizationRequestResolver` uses Spring's resolver (state, nonce, PKCE), and a customizer adds `acr_values` (`acr_advanced`). The login sends no `claims` parameter. Everything travels in the URL, where it can be edited: the `acr` check on the ID token is the protection of the authentication level.
 
+A confirmation is sent differently: itsme requires a request object, and `acr_values` and `claims` travel inside it only. See [Request object](#request-object).
+
 ---
 
 ## Token request
@@ -391,14 +392,13 @@ Spring's default ID token decoder cannot decrypt JWE. `ItsmeClientConfig.idToken
 |---|---|
 | Encrypted and nested signed JWT (`cty: JWT`) | `ItsmeCrypto.requireNestedSignedJwt` |
 | Decryption: dir / A256GCM with the key derived from the secret | Nimbus `JWEDecryptionKeySelector` |
-| Signature RS256 with itsme's JWKS | Nimbus `JWSVerificationKeySelector` |
-| Or, with `id-token-signature: HS256` only: signature HS256 with the client secret | Nimbus `SingleKeyJWSKeySelector` |
+| Signature HS256 with the client secret | Nimbus `SingleKeyJWSKeySelector` |
 | `iss`, `aud`, `iat` | Spring `OidcIdTokenValidator` |
 | `exp` (60 s skew) | Spring `JwtTimestampValidator` |
 | `nonce` | Spring (built in) |
 | `acr` | `AcrValidator` — *presence of the claim to be confirmed in E2E* |
 
-Why the nested check matters: anyone holding the client secret can encrypt a token for us. Only itsme's signature proves where the token comes from. With an HS256 signature, the secret can sign as well: the check still refuses an unsigned token, and the origin rests on the token endpoint (see [Client authentication](#client-authentication)).
+Why the nested check matters: the encryption key is derived from the client secret, and an encrypted token with nothing signed inside must never be accepted. The signature is an HMAC made with the same secret, so the origin of the token rests on itsme's token endpoint (see [Client authentication](#client-authentication)).
 
 ---
 
@@ -509,7 +509,8 @@ Source: the public [Confirmation](https://belgianmobileid.github.io/doc/confirma
 
 - **Same protocol as the login.** The confirmation uses the same endpoints, parameters, token request and ID token as authentication. The differences: a service registered as a Confirmation service (`scope=openid service:<code>`), and a *WYSIWYS template* in the `claims` parameter, which is mandatory.
 - **Two templates.** `adv_payment` takes an amount ("a string holding an integer"), a currency and an IBAN. `free_text` takes a text that may use `<b>`, `<i>`, `<u>` and `<br>`, up to 7500 characters, in the ISO-8859-15 character set. Every template claim is `essential: true`, under `http://itsme.services/v2/claim/`.
-- **Same client authentication.** The Confirmation service offers the same two methods as authentication, "Private key JWT" and "Client secret". With the client secret, the template travels in the `claims` parameter of the URL, like the other parameters.
+- **Same client authentication.** The Confirmation service offers the same two methods as authentication, "Private key JWT" and "Client secret".
+- **A request object is mandatory.** The parameter table says `request` is required if there is no `request_uri`, and that the JWT "MUST be signed" and "MUST also be encrypted": signed, then encrypted. The JOSE page only describes how with RSA: signed with RS256 and a key of the client, encrypted with RSA-OAEP-256 and itsme's public key. It does not say how a client that has only a client secret signs. See [Request object](#request-object).
 - **Nothing comes back about the operation.** The answer is the usual ID token. There is no approval proof, no echo of the text, and no hash of it.
 
 ### What it means for the application
@@ -519,7 +520,7 @@ Because itsme returns no proof, **the application's own checks are what make an 
 | Question | Answered by | Code |
 |---|---|---|
 | Is this answer for this confirmation? | `state` (single use, 5 minutes), `nonce`, PKCE | `JpaConfirmationRequestRepository`, Spring's `OidcAuthorizationCodeAuthenticationProvider` |
-| Which text is shown to the customer? | Text built on the server from the data of the operation, sent in the `claims` parameter; never read from the callback | `ConfirmableOperation.approvalText`, `ItsmeClaims.confirmation` |
+| Which text is shown to the customer? | Text built on the server from the data of the operation, sent in the `claims` of the request object; never read from the callback | `ConfirmableOperation.approvalText`, `ItsmeClaims.confirmation` |
 | Is the operation the customer's? | The data is built for the logged-in customer at the start; a record that already exists (an offer) is read for that customer only, at the start and again at execution; an order is created for that customer | `ConfirmableOperation` implementations (`operation_not_found`) |
 | Which operation does the approval execute? | The type and reference stored at the start, never the callback URL and never a later request; the reference is a pending operation, reloaded for the same customer and type | `ConfirmableOperationDispatcher.execute` (`unknown_operation`, `operation_not_found`) |
 | Is it the customer who started it? | Only a call with that customer's bearer token can start a confirmation and create its `state`; the callback finds the customer through that single-use `state` | `ItsmeConfirmationService.start`, `JpaConfirmationRequestRepository` (`confirmation_not_found`) |
@@ -529,12 +530,28 @@ Because itsme returns no proof, **the application's own checks are what make an 
 
 Without the `sub` check, any itsme account could approve the operation, for example a fraudster's own account, in a session where the fraudster is logged in as the victim.
 
+### Request object
+
+itsme confirmed to the author of this sample that the request object is mandatory for a confirmation and must be signed, also for a client that authenticates with a client secret. `ItsmeRequestObject` builds it; `ItsmeConfirmationService.start` puts it in the `request` parameter.
+
+| Step | Algorithm | Key | Who can undo it |
+|---|---|---|---|
+| 1. Sign | HS256 | The client secret, its UTF-8 bytes as they are (OIDC Core §10.1; `ItsmeCrypto.signatureKey`) | itsme verifies it with the same secret |
+| 2. Encrypt | RSA-OAEP-256, A256GCM | itsme's **public** encryption key (`"use": "enc"`), read from its JWKS (`itsme.endpoints.jwk-set-uri`) | Only itsme, with its private key |
+
+- **No key pair of our own.** Encrypting needs only itsme's public key. Signing with RS256 would need a private key of ours, and a way for itsme to know the public one; a client secret cannot make an RS256 signature. With the secret, the signature is HS256, which itsme lists in `request_object_signing_alg_values_supported`.
+- **What is inside.** `iss` (our client id), `aud` (itsme's issuer), `iat`, `exp` (5 minutes), `jti`, and every parameter of the request: `response_type`, `client_id`, `redirect_uri`, `scope`, `state`, `nonce`, `code_challenge`, `code_challenge_method`, `acr_values` and `claims` (the template, the text, the linked `sub`).
+- **What stays in the URL.** `response_type`, `client_id` and `scope`, as OIDC Core §6.1 requires, and what Spring puts there anyway: `redirect_uri`, `state`, `nonce` and the PKCE challenge, with the same values. **`acr_values` and `claims` are in the request object only:** the text to approve, the linked `sub` and the requested level can be neither read nor changed in the browser.
+- **Still checked at the callback.** The request object protects what itsme shows. It does not replace the checks on itsme's answer: the operation executed is the one stored at the start (rule 13), the `acr` of the ID token is checked, and its `sub` is compared with the linked account.
+- **The key is read when needed.** itsme's JWKS is fetched at the first confirmation and cached by Nimbus, through the outbound proxy; startup still does not depend on reaching itsme. If the key cannot be read, the start is refused with `itsme_unavailable`.
+- ***To be confirmed in E2E.*** The itsme documentation only describes RS256 for the request object. The profile in the itsme portal must be set to HS256: itsme then signs the ID token with the client secret too (see [Client authentication](#client-authentication)). Confirm that itsme accepts the request object signed with HS256 and the client secret; a refusal is reported as `invalid_request_object`. Confirm also the content encryption (`A256GCM`) and that the parameters repeated in the URL are accepted.
+
 ### Choices made in the sample
 
-- **The text in the URL.** `ItsmeConfirmationService.start` adds `claims` (the `free_text` template, the text, and the linked `sub`) to the request Spring builds, as JSON in the URL. Whatever the URL carries, the operation executed is the one stored at the start (rule 13). A long text makes a long URL: at most 7500 characters, more once encoded (*to be confirmed in E2E*: the length itsme accepts).
+- **The text in the request object.** `ItsmeConfirmationService.start` puts `claims` (the `free_text` template, the text, and the linked `sub`) in the request object, not in the URL. Whatever itsme shows, the operation executed is the one stored at the start (rule 13). A long text makes a long URL all the same, because the request object travels in it: at most 7500 characters, about twice as many once signed and encrypted (*to be confirmed in E2E*: the length itsme accepts).
 - **`free_text` only.** `adv_payment` describes the amount as "a string holding an integer" without saying in which unit (euros or cents). Add it once that is confirmed with itsme.
 - **Text built, not escaped.** `ItsmeFreeText` emits only the tags itsme renders, checks the length and the character set, and refuses `<`, `>` and `&` in the text: the documentation does not say whether HTML entities are decoded. Control characters (tab, line feed, ...) are refused too: a line break is `<br>`, and the documentation does not say how raw ones are shown.
-- **The linked `sub` in the request.** The customer is logged in, so the application knows which itsme account must approve. `claims` carries it as `"userinfo": {"sub": {"value": "<linked sub>"}}`: itsme documents that it then skips its identification page, so the customer does not scan a QR code again (itsme only reads it under `userinfo`). It is a hint for itsme, not a check: the documentation does not say that another account is refused, so the `sub` of the ID token is still compared with the linked account at the callback (`wrong_person`). The `sub` is a pseudonym specific to our client; it is visible in the URL, like the rest of `claims`.
+- **The linked `sub` in the request.** The customer is logged in, so the application knows which itsme account must approve. `claims` carries it as `"userinfo": {"sub": {"value": "<linked sub>"}}`: itsme documents that it then skips its identification page, so the customer does not scan a QR code again (itsme only reads it under `userinfo`). It is a hint for itsme, not a check: the documentation does not say that another account is refused, so the `sub` of the ID token is still compared with the linked account at the callback (`wrong_person`). The `sub` is a pseudonym specific to our client; it travels in the request object, like the rest of `claims`.
 - **Template under `id_token`.** The documentation does not say whether the template goes under `id_token` or `userinfo`. The sample uses `id_token` and never calls UserInfo (*to be confirmed in E2E*).
 - **Not a login.** The confirmation registration (`itsme-confirmation`) is not in the login's `ClientRegistrationRepository`, and its callback (`/itsme/confirmation/callback`) is outside `oauth2Login()`. A confirmation `state` cannot end a login, and a login `state` cannot end a confirmation. The confirmation authenticates nobody: its result is never put in a security context.
 - **Confirmed in itsme, executed at once.** The start is an API call with the customer's token. The callback checks itsme's answer and, once every check has passed, executes the operation (`ConfirmedOperationExecutor`): the customer confirmed it in the itsme app, and that confirmation is what counts. Nothing more is asked of the browser. The callback carries no credential: what it relies on is the single-use `state`, which only a call with the customer's token can create, and the itsme account that approved.
@@ -573,7 +590,7 @@ sequenceDiagram
     A->>D: prepare: pending operation persisted (customer, type, data as JSON), 10 min
     A->>S: start(customer, operation: type, reference of the pending operation, text)
     S->>D: state, nonce, PKCE code_verifier, customer, type, reference, text (5 min)<br/>hand-over begun: browser code challenge under the state
-    A-->>U: JSON: the itsme URL (claims with the text and the linked sub)
+    A-->>U: JSON: the itsme URL (request object: the text and the linked sub, signed and encrypted)
     U->>I: Reads the text, approves in the itsme app
     I-->>U: 302 to /itsme/confirmation/callback with code and state
     U->>S: 2. Callback
@@ -594,7 +611,7 @@ sequenceDiagram
 
 ### Tests
 
-`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid order by Alex: `linkedItsmeAccountConfirmsTheOrder`, `portalListsTheOperationsOfTheCustomerOnly`, `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `refusalInTheItsmeAppChangesNothing`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutToken`, `confirmationCannotBeStartedWithoutBrowserCodeChallenge`, `browserCodeChallengeIsNotSentToItsme`, `loginEndpointCannotStartAConfirmation`, the data of the operation (`noOrderExistsBeforeTheConfirmation`, `startPersistsThePendingOperationOfTheCustomer`, `refusedStartPersistsNothing`, `orderIsCreatedFromTheReloadedData`, `refusedConfirmationDoesNotExecuteThePendingOperation`, `pendingOperationOfAnotherCustomerIsNotExecuted`, `pendingOperationOfAnotherTypeIsNotExecuted`, `unknownPendingOperationIsNotExecuted`, `priceChangedAfterTheStartDoesNotChangeTheConfirmedOrder`, `priceAndDescriptionCannotBeChosenByTheRequest`, `unknownProductCannotBeOrdered`, `persistedDataThatIsNotAnOrderIsNotExecuted`, `eachConfirmationCreatesOneOrder`), the hand-over (`callbackExecutesTheOperationWhetherTheCodeIsRedeemedOrNot`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `redemptionNeedsNoTokenAndReturnsANewOneWithTheReferenceOfTheOrder`, `newTokenOutlivesTheTokenOfTheLogin`, `redemptionAnswerIsNotCached`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `browserCodeChallengeAloneCannotRedeemTheCode`, `confirmationCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCodeCannotBeRedeemedTwice`, `confirmationCodeExpiresAfterSixtySecondsAndIsPurged`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `longestApprovalTextIsKeptIntact`, `callbackRedirectTargetCannotBeChosenByTheRequest`), `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, `noCookieIsSetDuringTheWholeConfirmation`, the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`), and several operations (`offerIsAcceptedThroughTheSameCallback`, `offerOfAnotherCustomerCannotBeSentForConfirmation`, `acceptedOfferCannotBeSentForConfirmationAgain`, `operationInTheCallbackUrlIsIgnored`, `persistedOfferOfAnotherCustomerIsNotExecuted`, `offerAcceptedInTheMeantimeIsNotExecutedTwice`, `unknownOperationTypeIsRefused`, `orderOfAnotherCustomerCannotBeReloaded`). What is sent to itsme: `confirmationRequestCarriesTheTextToApproveInTheUrl`, `confirmationRequestAsksForTheWysiwysTemplateOnlyNoIdentityClaim`, `confirmationRequestNamesTheItsmeAccountLinkedToTheCustomer`, `tokenRequestUsesTheConfirmationRedirectUriClientSecretPostAndPkce`. `ConfirmableOperationDispatcherTest` covers the operations by type (`duplicateOperationTypeFailsAtStartup`, `unknownOperationTypeIsRefusedAtTheStart`, `unknownOperationTypeIsRefusedAtTheExecution`). `ItsmeFreeTextTest` covers the text.
+`ItsmeConfirmationFlowTest` lists the attacks, each against an otherwise valid order by Alex: `linkedItsmeAccountConfirmsTheOrder`, `portalListsTheOperationsOfTheCustomerOnly`, `unknownItsmeAccountCannotConfirmAndIsReported`, `itsmeAccountOfAnotherCustomerCannotConfirm`, `itsmeAccountLinkedWhenTheConfirmationStartedButReplacedSinceCannotConfirm`, `refusalInTheItsmeAppChangesNothing`, `customerNoLongerActiveCannotConfirm`, `confirmationCannotBeStartedWithoutToken`, `confirmationCannotBeStartedWithoutBrowserCodeChallenge`, `browserCodeChallengeIsNotSentToItsme`, `loginEndpointCannotStartAConfirmation`, the data of the operation (`noOrderExistsBeforeTheConfirmation`, `startPersistsThePendingOperationOfTheCustomer`, `refusedStartPersistsNothing`, `orderIsCreatedFromTheReloadedData`, `refusedConfirmationDoesNotExecuteThePendingOperation`, `pendingOperationOfAnotherCustomerIsNotExecuted`, `pendingOperationOfAnotherTypeIsNotExecuted`, `unknownPendingOperationIsNotExecuted`, `priceChangedAfterTheStartDoesNotChangeTheConfirmedOrder`, `priceAndDescriptionCannotBeChosenByTheRequest`, `unknownProductCannotBeOrdered`, `persistedDataThatIsNotAnOrderIsNotExecuted`, `eachConfirmationCreatesOneOrder`), the hand-over (`callbackExecutesTheOperationWhetherTheCodeIsRedeemedOrNot`, `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment`, `redemptionNeedsNoTokenAndReturnsANewOneWithTheReferenceOfTheOrder`, `newTokenOutlivesTheTokenOfTheLogin`, `redemptionAnswerIsNotCached`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `browserCodeChallengeAloneCannotRedeemTheCode`, `confirmationCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCodeCannotBeRedeemedTwice`, `confirmationCodeExpiresAfterSixtySecondsAndIsPurged`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `longestApprovalTextIsKeptIntact`, `callbackRedirectTargetCannotBeChosenByTheRequest`), `loginStateCannotEndAConfirmation`, `confirmationStateCannotEndALogin`, `callbackCannotBeReplayed`, `confirmationExpiresAfterFiveMinutesAndIsPurged`, `noSessionIsCreatedDuringTheWholeConfirmation`, `noCookieIsSetDuringTheWholeConfirmation`, the ID token checks (`basicAcrIsRejected`, `idTokenIssuedForAnotherRequestIsRejected`, `encryptedButUnsignedTokenIsRejected`), and several operations (`offerIsAcceptedThroughTheSameCallback`, `offerOfAnotherCustomerCannotBeSentForConfirmation`, `acceptedOfferCannotBeSentForConfirmationAgain`, `operationInTheCallbackUrlIsIgnored`, `persistedOfferOfAnotherCustomerIsNotExecuted`, `offerAcceptedInTheMeantimeIsNotExecutedTwice`, `unknownOperationTypeIsRefused`, `orderOfAnotherCustomerCannotBeReloaded`). What is sent to itsme: `confirmationRequestCarriesTheTextToApproveInTheRequestObject`, `requestObjectIsSignedWithTheClientSecretAndEncryptedForItsme`, `textToApproveLevelAndLinkedAccountAreNotInTheUrl`, `confirmationRequestAsksForTheWysiwysTemplateOnlyNoIdentityClaim`, `confirmationRequestNamesTheItsmeAccountLinkedToTheCustomer`, `tokenRequestUsesTheConfirmationRedirectUriClientSecretPostAndPkce`. `ConfirmableOperationDispatcherTest` covers the operations by type (`duplicateOperationTypeFailsAtStartup`, `unknownOperationTypeIsRefusedAtTheStart`, `unknownOperationTypeIsRefusedAtTheExecution`). `ItsmeFreeTextTest` covers the text.
 
 ---
 
@@ -624,6 +641,7 @@ The confirmation callback redirects to `app.confirmation-error-url?error=<code>`
 | `confirmation_not_found` | Unknown, expired (> 5 min) or already used `state` |
 | `wrong_person` | Approved with an itsme account that is not the one linked to the customer (also a fraud signal) |
 | `not_linked` | At the start: the customer has no linked itsme account, so nobody could confirm |
+| `itsme_unavailable` | At the start: itsme's public encryption key could not be read from its JWKS, so the request object could not be encrypted |
 | `invalid_request` | At the start: no browser code challenge, so nothing could be handed over. At the callback: neither `code` nor `error` |
 | `operation_not_found` | At the start: the product does not exist, or the offer does not exist, is not the customer's, or is no longer open. At execution: the pending operation does not exist, has expired, was already executed, is another customer's or of another type, holds data the operation cannot read, or can no longer be executed (the offer is no longer open) |
 | `unknown_operation` | No operation is registered for the stored type |
@@ -637,7 +655,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 | # | Rule | Why | Guarded by |
 |---|---|---|---|
 | 1 | **No hand-written cryptography.** Only Nimbus and Spring Security calls, with explicit algorithms. The one exception is the key derivation from the client secret (`ItsmeCrypto.idTokenDecryptionKey`, OIDC Core §10.2), and its deliberately independent copy in `ItsmeStubCrypto`, which must not call production code: it is the reference the tests check us against. | Crypto mistakes do not show in a demo; they show in an incident. | The `IdTokenValidation` tests; `tokenEncryptedWithAnotherSecretIsRejected` |
-| 2 | **The ID token must be signed inside the encryption** (`ItsmeCrypto.requireNestedSignedJwt`), with exactly one configured algorithm: RS256 with itsme's key, or, for a client registered so at itsme, HS256 with the secret. | The encryption key is derived from a shared secret: anyone holding it can encrypt a token for us. Only the signature proves where it comes from; accepting two algorithms at once would let a token pass with the wrong kind of key. | `encryptedButUnsignedTokenIsRejected` (all three test classes), `plainJwsIsNotAcceptedAsIdToken`, `hs256TokenIsRejectedWhenRs256IsConfigured`, `rs256TokenIsRejectedWhenHs256IsConfigured`, `tokenSignedWithAnotherSecretIsRejected`, `hs256IsRefusedWithAClientSecretShorterThan256Bits` |
+| 2 | **The ID token must be signed inside the encryption** (`ItsmeCrypto.requireNestedSignedJwt`), with exactly one algorithm: HS256 with the client secret, as the itsme profile is registered. | An encrypted token with no signature inside must never pass; accepting a second algorithm would let a token pass with the wrong kind of key. | `encryptedButUnsignedTokenIsRejected` (login and confirmation), `plainJwsIsNotAcceptedAsIdToken`, `rs256TokenIsRejected`, `tokenSignedWithAnotherSecretIsRejected`, `clientSecretShorterThan256BitsIsRefused` |
 | 3 | **Keep `AcrValidator`.** If itsme E2E shows that `acr` is not sent, report it; do not remove the check. | Without it, a fingerprint approval, or an edited URL, passes as an itsme-code approval. | `missingAcrIsRejected`, `basicAcrIsRejected` |
 | 4 | **Find the customer by `sub` only.** Never by itsme's `email` or any other itsme claim. | itsme does not verify the email: anyone can put a victim's address in their own itsme account. | `unknownItsmeAccountIsNotIdentifiedByTheEmailItsmeSends` |
 | 5 | **Authentication only.** Request no identity claim; refuse an unknown `sub`; never write `itsme_link` during the login. | See [Authentication, not identification](#authentication-not-identification). | `authorizationRequestAsksForNoClaimAndNoIdentityScope`, `confirmationRequestAsksForTheWysiwysTemplateOnlyNoIdentityClaim`, `unknownItsmeAccountIsRejected` |
@@ -649,6 +667,7 @@ Each rule below protects against an attack or an operational failure. Changing o
 | 11 | **Single-use login state, confirmation state, pending operations and hand-over codes:** read the row, delete it, and accept it only if exactly one row was deleted. No database-specific SQL: the delete is a JPQL query that returns the number of rows deleted, and a row is inserted, never merged (see [Database access](#database-access)). | Two callbacks with the same `state`, or two redemptions of the same code (double click, replay), must not both succeed; a confirmation must be executed once. | `callbackCannotBeReplayed` (login and confirmation), `concurrentCallbacksWithTheSameStateSucceedOnlyOnce`, `loginInProgressExpiresAfterFiveMinutesAndIsPurged`, `handoverCodeCannotBeReplayed`, `confirmationCodeCannotBeRedeemedTwice`, `orderIsCreatedFromTheReloadedData`, `secondFlowWithTheSameStateDoesNotReplaceTheFirst` |
 | 12 | **No cookie, and no token or result in a URL.** Each callback, of the login and of the confirmation, redirects to the SPA with a one-time code in the fragment; redeeming it requires the browser code verifier whose hash the SPA sent in the start request, and a code of one flow cannot end the other. | A token in a URL leaks (history, logs, `Referer`); a code without verifier can be redeemed in another browser (login CSRF, or a token for whoever sees the callback link). | `callbackRedirectsToTheSpaWithOnlyAOneTimeCodeInTheFragment` (login and confirmation), `browserCodeChallengeAloneCannotRedeemTheCode` (login and confirmation), `handoverWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `redemptionWithTheVerifierOfAnotherBrowserIsRefusedAndConsumesTheCode`, `loginCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCodeWithoutBrowserCodeVerifierIsRefused`, `confirmationCannotBeStartedWithoutBrowserCodeChallenge`, `loginCodeCannotBeRedeemedAsAConfirmation`, `confirmationCodeCannotBeRedeemedAsALogin`, `noCookieIsSetDuringTheWholeFlow`, `noCookieIsSetDuringTheWholeConfirmation` |
 | 13 | **A confirmation executes the operation stored at its start, for that customer, once itsme's answer has passed every check.** The execution happens at the callback, only after the `state`, the ID token and the linked `sub` are checked (`wrong_person` otherwise), and does not depend on the redemption that follows. The data is built on the server and persisted at the start (`pending_operation`); the operation type and the reference of that pending operation are stored with the confirmation in progress, never taken from the callback URL or from a later request; the pending operation is reloaded for the same customer and the same type only. Each `ConfirmableOperation` limits every query to the customer; an operation on an existing record executes it with a conditional update limited to the customer and to an open record, accepted only if exactly one row changed. Operation types are unique. | Otherwise an approval of one operation could execute another: one chosen in the callback URL, another customer's, one of another type, one with a price the customer did not read, or the same record a second time. | `callbackExecutesTheOperationWhetherTheCodeIsRedeemedOrNot`, `unknownItsmeAccountCannotConfirmAndIsReported`, `operationInTheCallbackUrlIsIgnored`, `priceAndDescriptionCannotBeChosenByTheRequest`, `priceChangedAfterTheStartDoesNotChangeTheConfirmedOrder`, `offerOfAnotherCustomerCannotBeSentForConfirmation`, `pendingOperationOfAnotherCustomerIsNotExecuted`, `pendingOperationOfAnotherTypeIsNotExecuted`, `unknownPendingOperationIsNotExecuted`, `persistedOfferOfAnotherCustomerIsNotExecuted`, `offerAcceptedInTheMeantimeIsNotExecutedTwice`, `unknownOperationTypeIsRefused`, `duplicateOperationTypeFailsAtStartup` |
+| 14 | **A confirmation is sent as a request object:** signed with HS256 and the client secret, then encrypted with itsme's public key (`ItsmeRequestObject`). `acr_values` and `claims` are never put in the URL. | itsme requires it. In the URL, the text to approve, the linked `sub` and the level could be read and edited in the browser. | `confirmationRequestCarriesTheTextToApproveInTheRequestObject`, `requestObjectIsSignedWithTheClientSecretAndEncryptedForItsme`, `textToApproveLevelAndLinkedAccountAreNotInTheUrl`, `requestObjectIsRefusedWithAClientSecretShorterThan256Bits` |
 
 ---
 
@@ -669,10 +688,11 @@ Each rule below protects against an attack or an operational failure. Changing o
 ## Points to confirm in itsme E2E
 
 - The ID token contains the `acr` claim (otherwise `AcrValidator` rejects every login). The itsme documentation does not say that it does.
-- ID token encrypted dir / A256GCM with the key derived from the secret as in OIDC Core §10.2, containing a JWS signed RS256. itsme lets you choose RS256 or HS256 at registration: choose **RS256** when you can. If the registration is HS256, set `itsme.id-token-signature: HS256` and confirm that itsme signs with the client secret's bytes as they are (OIDC Core §10.1).
+- ID token encrypted dir / A256GCM with the key derived from the secret as in OIDC Core §10.2, containing a JWS signed HS256 with the client secret's bytes as they are (OIDC Core §10.1). The profile in the itsme portal must be set to HS256.
 - Clients onboarded before 25 June 2025 use other endpoints (`https://oidc.[e2e/prd].itsme.services/clientsecret-oidc/csapi/v0.1/...`), and the documentation's example ID token shows an `iss` on the `oidc.` host. Copy the endpoints and the `issuer` from the discovery document of your own client.
 - Exact `issuer` and `jwks_uri` values in the discovery document (in PRD, `jwks_uri` is `https://idp.prd.itsme.services/v2/jwkSet`).
-- Confirmation: itsme accepts the `free_text` template in the `claims` URL parameter, up to the longest text (7500 characters, URL-encoded JSON), under the `id_token` member of `claims` (the documentation does not say `id_token` or `userinfo`), renders `<b>` and `<br>` as expected, and returns `acr` in the ID token. Check how a refusal in the app is reported (expected: `access_denied`).
+- Confirmation: itsme accepts the request object signed with HS256 and the client secret, and encrypted with RSA-OAEP-256 / A256GCM and its `enc` key (the documentation only describes RS256 with a key of the client; a refusal is `invalid_request_object`), with `response_type`, `client_id`, `scope`, `redirect_uri`, `state`, `nonce` and the PKCE challenge repeated in the URL. See [Request object](#request-object).
+- Confirmation: itsme accepts the `free_text` template in the `claims` of the request object, up to the longest text (7500 characters; the request object travels in the URL), under the `id_token` member of `claims` (the documentation does not say `id_token` or `userinfo`), renders `<b>` and `<br>` as expected, and returns `acr` in the ID token. Check how a refusal in the app is reported (expected: `access_denied`).
 - Confirmation: whether HTML entities (`&amp;`) are decoded in `free_text`, and the unit of the `adv_payment` amount, before supporting either.
 - SPA: on the phones you support, the itsme app brings the customer back in the tab that started the flow, not in a new tab. The browser code verifier is in that tab's `sessionStorage`: in a new tab, the redemption ends with `invalid_handover`; a login starts again, and a confirmation is executed but the SPA gets no new token to show the record.
 - Confirmation: with the linked `sub` in `claims` (`"userinfo": {"sub": {"value": ...}}`), itsme skips its identification page, on desktop and on mobile. Check what happens when that `sub` no longer exists (the customer re-created their itsme account), and whether itsme refuses an approval by another account. Our `sub` check stays either way.

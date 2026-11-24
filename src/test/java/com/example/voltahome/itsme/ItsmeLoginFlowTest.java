@@ -24,7 +24,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import com.example.voltahome.local.ItsmeStubCrypto;
 import com.example.voltahome.support.ItsmeIntegrationTest;
 import com.example.voltahome.support.ItsmeWireMock;
 import com.github.tomakehurst.wiremock.client.WireMock;
@@ -45,7 +44,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 /**
  * The itsme protocol, end to end against a WireMock itsme: request, token, ID token, state. Client secret
- * (client_secret_post), parameters in the URL, ID token encrypted with dir + A256GCM and signed with RS256.
+ * (client_secret_post), parameters in the URL, ID token encrypted with dir + A256GCM and signed with HS256.
  */
 class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
 
@@ -194,19 +193,20 @@ class ItsmeLoginFlowTest extends ItsmeIntegrationTest {
         }
 
         @Test
-        void tokenSignedWithKeysItsmeDoesNotPublishIsRejected() throws Exception {
-            login(t -> t.signedBy(new ItsmeStubCrypto())).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
+        void tokenSignedWithAnotherSecretIsRejected() throws Exception {
+            login(t -> t.signedWithSecret("another-client-secret-0123456789abcdef"))
+                    .andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
         }
 
         @Test
-        void hs256TokenIsRejectedWhenRs256IsConfigured() throws Exception {
-            // Default itsme.id-token-signature=RS256: an HMAC made with the client secret is not accepted
-            login(t -> t.signedWithSecret(CLIENT_SECRET)).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
+        void rs256TokenIsRejected() throws Exception {
+            // Exactly one signature algorithm is accepted, HS256: a token signed with itsme's RSA key is not
+            login(t -> t.signedWithItsmeRsaKey()).andExpect(redirectedUrl("/login-error?error=invalid_id_token"));
         }
 
         @Test
         void encryptedButUnsignedTokenIsRejected() throws Exception {
-            // Anyone holding the client secret can encrypt: only itsme's signature proves the origin
+            // Encryption alone is never enough: the token must carry a signature made with the client secret
             StartedLogin started = startLogin();
             stubTokenEndpoint(idToken(started.nonce()).buildEncryptedButUnsigned());
 

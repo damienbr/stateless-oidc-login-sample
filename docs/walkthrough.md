@@ -85,7 +85,7 @@ None of this requires replacing `oauth2Login()`. Spring Security is built from s
 
 **What Spring does by default.** The backend proves who it is with a client secret, and the authorization parameters travel in the browser URL. That part fits itsme: Spring sends `client_id` and `client_secret` in the body of the token request (`client_secret_post`) without help. The ID token, for Spring, is a JWS: signed by the provider, readable by anyone who holds it.
 
-**Why it breaks with itsme.** itsme's ID token is a JWS *inside* a JWE: signed by itsme, then encrypted for us with `dir` and `A256GCM`, using a key derived from our client secret. Spring's default decoder cannot open the envelope. The itsme pages do not say how the key is derived; the OpenID Connect specification (§10.2) does: the SHA-256 hash of the secret. Confirm it in the itsme test environment on day one.
+**Why it breaks with itsme.** itsme's ID token is a JWS *inside* a JWE: signed by itsme with HS256 and our client secret (our itsme profile is registered with HS256), then encrypted for us with `dir` and `A256GCM`, using a key derived from our client secret. Spring's default decoder cannot open the envelope. The itsme pages do not say how the key is derived; the OpenID Connect specification (§10.2) does: the SHA-256 hash of the secret. Confirm it in the itsme test environment on day one.
 
 **The fix.** We replace the factory that builds the decoder, in [`ItsmeClientConfig.idTokenDecoderFactory`](../src/main/java/com/example/voltahome/itsme/ItsmeClientConfig.java):
 
@@ -94,8 +94,8 @@ DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
 processor.setJWEKeySelector(new JWEDecryptionKeySelector<>(      // 1. decrypt with the shared key
         JWEAlgorithm.DIR, EncryptionMethod.A256GCM,
         new ImmutableSecret<>(ItsmeCrypto.idTokenDecryptionKey(properties.clientSecret()))));
-processor.setJWSKeySelector(new JWSVerificationKeySelector<>(    // 2. check ITSME's signature
-        JWSAlgorithm.RS256, itsmeJwkSource));
+processor.setJWSKeySelector(new SingleKeyJWSKeySelector<>(       // 2. verify the HMAC (client secret)
+        JWSAlgorithm.HS256, ItsmeCrypto.signatureKey(properties.clientSecret())));
 
 NimbusJwtDecoder decoder = new NimbusJwtDecoder(processor);
 decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
@@ -106,13 +106,13 @@ decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
 
 Declaring the decoder factory as a bean is enough: `oauth2Login()` finds it and uses it instead of the default.
 
-**The check that is easy to forget.** Anyone who holds the client secret can encrypt a token for us. Nimbus would accept an encrypted token that is not signed inside. Only itsme's signature proves where the token comes from, so we refuse any token whose outer envelope does not announce a signed token inside (`cty: JWT`). That is one small method, [`ItsmeCrypto.requireNestedSignedJwt`](../src/main/java/com/example/voltahome/itsme/ItsmeCrypto.java), and one test, `encryptedButUnsignedTokenIsRejected`.
+**The check that is easy to forget.** Nimbus would accept an encrypted token that is not signed inside, and the encryption key is derived from the client secret. So we refuse any token whose outer envelope does not announce a signed token inside (`cty: JWT`). That is one small method, [`ItsmeCrypto.requireNestedSignedJwt`](../src/main/java/com/example/voltahome/itsme/ItsmeCrypto.java), and one test, `encryptedButUnsignedTokenIsRejected`.
 
-**If your registration signs with HS256.** itsme lets a client secret client choose RS256 or HS256. Prefer RS256. If HS256 cannot be changed, set `itsme.id-token-signature=HS256`: the decoder then checks an HMAC made with the secret's bytes as they are (OIDC Core §10.1), and only that algorithm. The cost: whoever holds the secret can also sign, so the proof of origin rests on the token coming straight from itsme's token endpoint over TLS.
+**What HS256 costs.** The itsme portal has one signature setting per profile, and the sample supports HS256 only: the decoder checks an HMAC made with the secret's bytes as they are (OIDC Core §10.1), and refuses any other algorithm. Whoever holds the secret can also sign, so the proof of origin rests on the token coming straight from itsme's token endpoint over TLS.
 
 **Keep the secret in a vault.** If it leaks, an intercepted authorization code can be exchanged and captured ID tokens can be decrypted. The README sums it up in [Client authentication](../README.md#client-authentication).
 
-**Check it yourself.** In `ItsmeLoginFlowTest`, `tokenRequestUsesClientSecretPostAndPkce` reads the token request as itsme receives it. The `IdTokenValidation` group builds tokens that are wrong in exactly one way: missing `acr`, wrong nonce, wrong issuer, another audience, expired, encrypted with another secret, signed by a key itsme does not publish, signed with HS256 when RS256 is configured, not signed at all. Each one must be rejected.
+**Check it yourself.** In `ItsmeLoginFlowTest`, `tokenRequestUsesClientSecretPostAndPkce` reads the token request as itsme receives it. The `IdTokenValidation` group builds tokens that are wrong in exactly one way: missing `acr`, wrong nonce, wrong issuer, another audience, expired, encrypted with another secret, signed with another secret, signed with RS256, not signed at all. Each one must be rejected.
 
 > **Takeaway: encryption hides the content; only the signature proves who wrote it.**
 
@@ -240,7 +240,7 @@ One honest caveat. The itsme v2 documentation describes `acr_values` in the requ
 
 ## Proving it without itsme
 
-You cannot call itsme from a unit test, and most developers in a team will never hold the test credentials. So the sample uses two stand-ins, each for a different job. Both have their own signing key and do the cryptography of the itsme side with the same class, `ItsmeStubCrypto`.
+You cannot call itsme from a unit test, and most developers in a team will never hold the test credentials. So the sample uses two stand-ins, each for a different job. Both have their own keys and do the cryptography of the itsme side with the same class, `ItsmeStubCrypto`.
 
 **For automated tests: WireMock.** WireMock runs inside the test JVM and answers on itsme's back-channel URLs: the discovery document, itsme's public keys and the token endpoint. The token endpoint only answers a request that carries our client id and secret and a PKCE `code_verifier`.
 
@@ -282,8 +282,8 @@ The sample is a reference, not a finished product. Before real customers use it,
 **Confirm in the itsme test environment.** The README keeps the full list in [Points to confirm in itsme E2E](../README.md#points-to-confirm-in-itsme-e2e):
 
 - The ID token contains the `acr` claim. The itsme documentation does not promise it.
-- The ID token format: encrypted with `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes, and signed with `RS256`. itsme lets you choose an RS256 or HS256 signature: choose RS256 when you can; with HS256, set `itsme.id-token-signature=HS256` and confirm that itsme signs with the secret's bytes as they are.
-- itsme accepts the confirmation's `free_text` template in the `claims` URL parameter, up to the longest text.
+- The ID token format: encrypted with `dir` and `A256GCM`, with the key derived from the secret as the OpenID Connect specification describes, and signed with `HS256` and the secret's bytes as they are. The profile in the itsme portal must be set to HS256.
+- itsme accepts the confirmation's request object, signed with HS256 and the client secret and encrypted with its public key, and the `free_text` template in its `claims`, up to the longest text.
 - The exact `issuer` and `jwks_uri` values in each environment's discovery document.
 
 **Ask itsme during onboarding.** Give them your redirect URIs. Ask them to make PKCE mandatory for your client: the code sends it anyway, but enforcement on the itsme side refuses a request without PKCE, even if someone changes the code later.

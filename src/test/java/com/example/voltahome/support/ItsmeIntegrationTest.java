@@ -38,7 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Starts the application with H2 and a WireMock itsme. Each test starts from a clean state.
- * ID tokens are signed by itsme with RS256 by default; ClientSecretHs256LoginFlowTest overrides the signature.
+ * ID tokens are signed by itsme with HS256 and the client secret, as for a profile registered with HS256.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -178,7 +178,7 @@ public abstract class ItsmeIntegrationTest {
         return mvc.perform(get("/api/portal").header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
     }
 
-    /** ID token as itsme sends it: signed with RS256, encrypted with a key derived from the client secret. */
+    /** ID token as itsme sends it: signed with HS256 and the client secret, encrypted with a key derived from it. */
     protected ItsmeWireMock.IdTokenBuilder idToken(String nonce) {
         return stub.idToken(itsme.baseUrl() + "/v2", nonce, CLIENT_SECRET);
     }

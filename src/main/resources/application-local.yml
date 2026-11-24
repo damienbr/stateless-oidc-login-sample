@@ -3,7 +3,8 @@
 # No Docker, no external service, no itsme credentials needed.
 server:
   port: 8080
-  # The confirmation text travels in the URL of the itsme stub, served by this same Tomcat (default limit: 8 KB)
+  # The request object of a confirmation (it holds the text) travels in the URL of the itsme stub, served by this
+  # same Tomcat (default limit: 8 KB)
   max-http-request-header-size: 64KB
 
 itsme:
